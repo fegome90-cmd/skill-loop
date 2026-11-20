@@ -1,0 +1,43 @@
+version: 1
+gates:
+  - id: constitution.integrity
+    checker: constitution_integrity
+    severity: block
+    description: El snapshot local de la Constitución coincide con el lock de procedencia.
+    laws: [VI.1, XI.2]
+
+  - id: plan.frozen
+    checker: plan_frozen
+    severity: block
+    description: El plan congelado sigue coincidiendo con la configuración y el snapshot actuales.
+    laws: [I.2, I.6]
+
+  - id: scope.compliance
+    checker: scope_compliance
+    severity: block
+    description: Los archivos mutados caen dentro del alcance declarado.
+    laws: [I.1, I.6, IV.7]
+
+  - id: quality.commands
+    checker: quality_commands
+    severity: block
+    description: Los comandos de calidad configurados terminan con código 0.
+    laws: [V.1, V.3, V.4]
+
+  - id: git.clean
+    checker: git_clean
+    severity: block
+    description: El árbol de trabajo queda limpio, excluyendo el estado propio de skill-loop.
+    laws: [IV.7, XI.8]
+
+  - id: docs.reconciled
+    checker: docs_reconciled
+    severity: block
+    description: El cierre declara documentación actualizada o una ausencia justificada.
+    laws: [VI.4, VI.6]
+
+  - id: evidence.chain
+    checker: evidence_chain
+    severity: block
+    description: La cadena de evidencia es íntegra y verificable.
+    laws: [XI.4, XI.5]
