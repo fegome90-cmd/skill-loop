@@ -1,0 +1,18 @@
+{
+  "schema": "skillrun/v1",
+  "id": "minimal",
+  "skills": {
+    "grilling": {
+      "path": "skills/grilling/SKILL.md",
+      "git_blob": "0123456789abcdef0123456789abcdef01234567"
+    }
+  },
+  "steps": [
+    {
+      "id": "discovery",
+      "skill": "grilling",
+      "kind": "grilling",
+      "result": {"summary": "string"}
+    }
+  ]
+}

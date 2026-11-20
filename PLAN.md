@@ -137,7 +137,7 @@ class Host(Protocol):
 - `validate` revisa solo esquema + formato de pins; no abre `SKILL.md` (eso es run/Fase 3).
 - Rechaza claves desconocidas en todo nivel, claves JSON duplicadas y skills declaradas sin usar. Sin tope de tamaño.
 - Obligatorios: `schema`, `id`, `skills`, `steps`; por paso `id`, `skill`, `kind`, `result`. `instruction` obligatoria en `kind: skill`, opcional en `grilling`. `description` y `on_done` opcionales (`on_done.directive` no vacío).
-- Pin: exactamente uno de `sha256` (64 hex) o `git_blob` (40 hex). `path` relativo al directorio del plugin; se rechazan absolutos, `..`, vacíos y `\`.
+- Pin: exactamente uno de `sha256` (64 hex minúscula) o `git_blob` (40 hex minúscula). `steps[0].skill` debe ser `grilling` (§5.3 invoca `/skill:grilling`). `path` sin NUL. `path` relativo al directorio del plugin; se rechazan absolutos, `..`, vacíos y `\`.
 - Errores: todos, en orden determinista, con ruta JSON (`steps[1].skill: …`).
 - Exit: `0` válido · `10` inválido (BLOCKED) · `70` INTERNAL · `2` uso. stdout solo JSON `{ok, plugin_id, digest}` / `{ok: false, errors}`; texto humano a stderr.
 - `plugin_digest()`: SHA-256 del JSON canónico. `check_result()`: claves exactas y tipo exacto (`bool` ≠ `integer`).
@@ -149,7 +149,7 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 
 | # | Fase | Listo cuando | Tokens est. | Real | Modelo / esfuerzo | Estado |
 |---|---|---|---|---|---|---|
-| 1 | Repo + esquema de plugin | `skillrun validate` acepta/rechaza plugins de ejemplo; tests verdes | 30–50 k | — | Opus 5.5 orq. + Codex gpt-6.2-sol (worker high, tester xhigh) | en curso |
+| 1 | Repo + esquema de plugin | `skillrun validate` acepta/rechaza plugins de ejemplo; tests verdes | 30–50 k | no medido (orquestador, worker y tester) | Opus 5.5 orq. + Codex gpt-6.2-sol (worker high, tester xhigh) | hecho (2026-11-20) |
 | 2 | Máquina de estados + recibos + lock | Run completo con host falso; tests de crash en cada etapa | 50–80 k | — | Opus 5.5 / medio | pendiente |
 | 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | — | Opus 5.5 / medio | pendiente |
 | 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | — | Sonnet 5.5 / medio | pendiente |
