@@ -1,0 +1,97 @@
+name: Repository security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Secrets and private paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the candidate and its history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: incoming
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Load the base branch policy for pull requests
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: policy
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Load the pinned policy when the base lacks it
+        if: github.event_name == 'pull_request'
+        working-directory: incoming
+        run: |
+          if [ -f ../policy/scripts/check-secrets.sh ]; then
+            exit 0
+          fi
+          mkdir -p ../policy/scripts
+          git cat-file blob 28ea331af01f24e0469c1963e1387d341e0fface > ../policy/.gitleaks.toml
+          git cat-file blob b750d5bbee2b4e87d7d18ccbdbf2b7091a64d9d1 > ../policy/scripts/check-secrets.sh
+          git cat-file blob ef7923109092941f9e5038ac8baaa7b13b566391 > ../policy/scripts/check-sensitive-paths.py
+          (cd ../policy && sha256sum -c - <<'SUMS'
+          cd07febbaf61fb6620d4ecb5f2a972a81c05d019eb1ea2ccfe7009e19d452e86  .gitleaks.toml
+          68cb2e0bb6a53714312e65040d7424e45509a37914144d14cfcff09c294582d9  scripts/check-secrets.sh
+          dd020fcc37909bb45408b6f1f00c54bf989017d4742b910287841ac4b81cf10f  scripts/check-sensitive-paths.py
+          SUMS
+          )
+          chmod +x ../policy/scripts/check-secrets.sh
+
+      - name: Install verified Gitleaks CLI
+        working-directory: ${{ runner.temp }}
+        run: |
+          version=8.30.1
+          base=https://github.com/gitleaks/gitleaks/releases/download
+          sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl --fail --silent --show-error --location --retry 2 \
+            "$base/v${version}/gitleaks_${version}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          echo "${sha}  gitleaks.tar.gz" | sha256sum --check --strict
+          mkdir -p security-bin
+          tar -xzf gitleaks.tar.gz -C security-bin gitleaks
+          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+
+      - name: Regression-test the Gitleaks policy
+        working-directory: incoming
+        run: |
+          test_dir=$(mktemp -d)
+          trap 'rm -rf "$test_dir"' EXIT
+          config=../policy/.gitleaks.toml
+
+          mkdir -p "$test_dir/allowed"
+          mkdir -p "$test_dir/blocked/literal" "$test_dir/blocked/compound" "$test_dir/blocked/quoted"
+          printf 'const apiKey = process.env.API_KEY;\n' > "$test_dir/allowed/a.js"
+          printf 'api_key = os.environ.get("API_KEY")\n' > "$test_dir/allowed/b.py"
+          printf 'apiKey: "${API_KEY}"\n' > "$test_dir/allowed/c.js"
+
+          if ! gitleaks dir "$test_dir/allowed" --config "$config" --redact=100 --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
+            echo "Gitleaks policy regression: an allowed reference was blocked." >&2
+            exit 1
+          fi
+
+          printf 'api_key = "abc%s"\n' 'def1234567890' > "$test_dir/blocked/literal/a.py"
+          printf 'api_key = %s + "suffix123456"\n' 'process.env.API_KEY' > "$test_dir/blocked/compound/a.py"
+          printf 'apiKey: "%s"\n' 'process.env.API_KEY' > "$test_dir/blocked/quoted/a.js"
+
+          for case in literal compound quoted; do
+            if gitleaks dir "$test_dir/blocked/$case" --config "$config" --redact=100 --no-banner \
+              --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
+              echo "Gitleaks policy regression: $case was not detected." >&2
+              exit 1
+            fi
+          done
+
+      - name: Scan committed files and history
+        working-directory: incoming
+        run: ../policy/scripts/check-secrets.sh history
