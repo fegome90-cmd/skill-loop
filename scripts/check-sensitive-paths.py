@@ -1,18 +1,45 @@
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
-
+from pathlib import Path
 
 ENV_TEMPLATES = {".env.example", ".env.sample", ".env.template"}
-PRIVATE_DIRECTORIES = {".ssh", ".aws", ".gnupg"}
+PRIVATE_DIRECTORIES = {".ssh", ".aws", ".gnupg", ".kube", ".docker"}
 PRIVATE_NAMES = {
-    ".envrc", ".gitleaksignore", ".netrc", "_netrc", "credentials", "secrets",
-    "id_rsa", "id_dsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk",
+    ".envrc",
+    ".gitleaksignore",
+    ".netrc",
+    "_netrc",
+    "credentials",
+    "secrets",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ecdsa_sk",
+    "id_ed25519",
+    "id_ed25519_sk",
+    ".pgpass",
+    ".pypirc",
+    ".npmrc",
+    ".my.cnf",
 }
-KEY_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".ppk", ".jks", ".keystore")
-CREDENTIAL_JSON = re.compile(r"(?:credentials|secrets|client[_-]secrets?|service[_-]account)(?:[-_.].+)?\.json\Z")
+KEY_SUFFIXES = (
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".ppk",
+    ".jks",
+    ".keystore",
+    ".p8",
+    ".der",
+    ".kdbx",
+)
+CREDENTIAL_JSON = re.compile(
+    r"(?:^|[-_.])(?:credentials|secrets|client[_-]secrets?|service[_-]account)"
+    r"(?:[-_.].+)?\.json\Z"
+)
 
 
 def git(*args):
@@ -25,7 +52,7 @@ def blocked_path(path):
         not PRIVATE_DIRECTORIES.isdisjoint(directories)
         or name in PRIVATE_NAMES
         or name.endswith(KEY_SUFFIXES)
-        or CREDENTIAL_JSON.fullmatch(name) is not None
+        or CREDENTIAL_JSON.search(name) is not None
         or ((name == ".env" or name.startswith(".env.")) and name not in ENV_TEMPLATES)
     )
 
@@ -68,7 +95,9 @@ def snapshot_index(destination):
         with target.open("xb") as output:
             subprocess.run(
                 ["git", "cat-file", "blob", object_id.decode("ascii")],
-                stdout=output, stderr=subprocess.DEVNULL, check=True,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                check=True,
             )
     return 0
 

@@ -36,13 +36,13 @@ jobs:
         working-directory: incoming
         run: |
           mkdir -p ../policy/scripts
-          git cat-file blob c11b444517dc26ad2931a59a73d99a6d4f964062 > ../policy/.gitleaks.toml
+          git cat-file blob 4f3b04122fbaf49887ba18a3e641d0243fed1616 > ../policy/.gitleaks.toml
           git cat-file blob b750d5bbee2b4e87d7d18ccbdbf2b7091a64d9d1 > ../policy/scripts/check-secrets.sh
-          git cat-file blob e497ede567c047dcdaac182f7f89bcc4e4a3230c > ../policy/scripts/check-sensitive-paths.py
+          git cat-file blob ac75ab4f94c46fa1108274af09daa784ef9fcdc6 > ../policy/scripts/check-sensitive-paths.py
           (cd ../policy && sha256sum -c - <<'SUMS'
-          bec9bb758edc2d48f11a45016b884fc24519c97a835097b2f323a6e93688a0fb  .gitleaks.toml
+          5e30ca26527f466119072c1657e3bd716deab5ba86a8694ce3a3f78569ff79e2  .gitleaks.toml
           68cb2e0bb6a53714312e65040d7424e45509a37914144d14cfcff09c294582d9  scripts/check-secrets.sh
-          466cfd8f46fdff34fc8ad5941372dd11c3c9ed29f8152c7aaa5633627e7ffa41  scripts/check-sensitive-paths.py
+          b25152300a5fedb531681ac45acda06bfb0e256e4798b715c3e6d688643af4f3  scripts/check-sensitive-paths.py
           SUMS
           )
           chmod +x ../policy/scripts/check-secrets.sh

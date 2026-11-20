@@ -33,6 +33,19 @@ este repositorio, se acepta su reporte privado aquí.
 Los prototipos de `reference/` son material de lectura: no se ejecutan ni se
 distribuyen.
 
+## Controles automáticos
+
+GitHub secret scanning y push protection están activos. El workflow
+`Repository security` agrega:
+
+- escaneo del historial con Gitleaks;
+- política de nombres sensibles (`.env`, claves, credenciales, `.kube`,
+  `.docker`);
+- un hook local opcional.
+
+No cubre binarios, archivos comprimidos ni mensajes de commit; esos casos
+requieren revisión humana.
+
 ## Expectativas
 
 Acuse de recibo en un plazo de cinco días hábiles. No hay compromiso de plazo de

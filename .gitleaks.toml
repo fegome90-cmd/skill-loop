@@ -11,9 +11,9 @@ secretGroup = 1
 keywords = ["api"]
 
 [[rules.allowlists]]
-description = "Unquoted environment variable references"
+description = "Environment and settings references"
 regexTarget = "match"
-regexes = ['''^[\w.-]+[ \t]*[=:][ \t]*(?:process\.env|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:[ \t;}]|$)''']
+regexes = ['''^["']?[\w.-]+["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?\(["']?|os\.environ\[["']?|os\.getenv\(["']?|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:$|[^\w])''']
 
 [[rules]]
 id = "skill-loop-macos-home-path"
