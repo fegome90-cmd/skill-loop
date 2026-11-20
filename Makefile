@@ -18,7 +18,7 @@ lint-docs:
 	uv run pre-commit run markdownlint-cli2 --all-files
 
 lint-yaml:
-	uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml config docs/constitution/SOURCE.lock
+	uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock
 
 hooks:
 	uv run pre-commit install

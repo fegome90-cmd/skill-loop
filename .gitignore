@@ -1,5 +1,5 @@
 .venv/
-.skill-loop/
+docs/agent/
 __pycache__/
 *.py[cod]
 .pytest_cache/
