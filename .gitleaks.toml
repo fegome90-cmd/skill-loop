@@ -13,7 +13,14 @@ keywords = ["api"]
 [[rules.allowlists]]
 description = "Environment and settings references"
 regexTarget = "match"
-regexes = ['''^["']?[\w.-]+["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?\(["']?|os\.environ\[["']?|os\.getenv\(["']?|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:$|[;,)}\]"'])''']
+regexes = ['''^["']?[\w.-]+["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?\(["']?|os\.environ\[["']?|os\.getenv\(["']?|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:[ \t]*[;,)}\]"']|[ \t]*$)''']
+
+[[rules]]
+id = "skill-loop-api-key-compound"
+description = "An API key assignment that appends a literal to an environment reference"
+regex = '''(?im)\b[\w.-]*api[_-]?key["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?|os\.getenv|\$[A-Z_]|\$\{)[A-Za-z_]\w*[ \t]*\+[ \t]*["']?([A-Za-z0-9][A-Za-z0-9_.+/=-]{11,})'''
+secretGroup = 1
+keywords = ["api"]
 
 [[rules]]
 id = "skill-loop-macos-home-path"

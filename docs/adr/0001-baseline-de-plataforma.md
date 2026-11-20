@@ -94,10 +94,10 @@ La protección clásica previa a este cambio:
   workflow que la invoca no. Mitigación aceptada: revisión explícita del diff de
   `.github/workflows/**` y `scripts/check-*`. Una alternativa futura es mover el
   check a un workflow reutilizable en un repositorio protegido.
-- GitHub secret scanning y push protection están activos. El scan propio usa las
-  reglas default de Gitleaks y agrega historial, nombres sensibles y hook local;
-  se mantiene por el historial y las rutas, que el scanning nativo no recorre,
-  no solo por duplicar proveedores.
+- GitHub secret scanning y push protection están activos y cubren los patrones de
+  proveedor en el historial. El scan propio agrega la política de nombres y rutas
+  sensibles, el hook local y un check requerido; `useDefault = true` se conserva
+  como defensa en profundidad y para que el check sea autocontenido.
 - El reporte privado de vulnerabilidades está habilitado en la configuración del
   repositorio y verificado por API.
 - La licencia MIT del árbol del proyecto cubre el contenido propio; las skills

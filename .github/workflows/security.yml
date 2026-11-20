@@ -37,11 +37,11 @@ jobs:
             exit 0
           fi
           mkdir -p ../policy/scripts
-          git cat-file blob 3ef61770ac87796a6a64c344a25393104f79d948 > ../policy/.gitleaks.toml
+          git cat-file blob 28ea331af01f24e0469c1963e1387d341e0fface > ../policy/.gitleaks.toml
           git cat-file blob b750d5bbee2b4e87d7d18ccbdbf2b7091a64d9d1 > ../policy/scripts/check-secrets.sh
           git cat-file blob ef7923109092941f9e5038ac8baaa7b13b566391 > ../policy/scripts/check-sensitive-paths.py
           (cd ../policy && sha256sum -c - <<'SUMS'
-          72eaa83df8d98b10d4b1c35d3843812fc57483174304bb523ee143eb57447c0b  .gitleaks.toml
+          cd07febbaf61fb6620d4ecb5f2a972a81c05d019eb1ea2ccfe7009e19d452e86  .gitleaks.toml
           68cb2e0bb6a53714312e65040d7424e45509a37914144d14cfcff09c294582d9  scripts/check-secrets.sh
           dd020fcc37909bb45408b6f1f00c54bf989017d4742b910287841ac4b81cf10f  scripts/check-sensitive-paths.py
           SUMS
@@ -68,7 +68,8 @@ jobs:
           trap 'rm -rf "$test_dir"' EXIT
           config=../policy/.gitleaks.toml
 
-          mkdir -p "$test_dir/allowed" "$test_dir/blocked"
+          mkdir -p "$test_dir/allowed"
+          mkdir -p "$test_dir/blocked/literal" "$test_dir/blocked/compound" "$test_dir/blocked/quoted"
           printf 'const apiKey = process.env.API_KEY;\n' > "$test_dir/allowed/a.js"
           printf 'api_key = os.environ.get("API_KEY")\n' > "$test_dir/allowed/b.py"
           printf 'apiKey: "${API_KEY}"\n' > "$test_dir/allowed/c.js"
@@ -79,15 +80,17 @@ jobs:
             exit 1
           fi
 
-          printf 'api_key = "abc%s"\n' 'def1234567890' > "$test_dir/blocked/literal.py"
-          printf 'api_key = %s + "suffix123456"\n' 'process.env.API_KEY' > "$test_dir/blocked/compound.py"
-          printf 'apiKey: "%s"\n' 'process.env.API_KEY' > "$test_dir/blocked/quoted.js"
+          printf 'api_key = "abc%s"\n' 'def1234567890' > "$test_dir/blocked/literal/a.py"
+          printf 'api_key = %s + "suffix123456"\n' 'process.env.API_KEY' > "$test_dir/blocked/compound/a.py"
+          printf 'apiKey: "%s"\n' 'process.env.API_KEY' > "$test_dir/blocked/quoted/a.js"
 
-          if gitleaks dir "$test_dir/blocked" --config "$config" --redact=100 --no-banner \
-            --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
-            echo "Gitleaks policy regression: a blocked value was not detected." >&2
-            exit 1
-          fi
+          for case in literal compound quoted; do
+            if gitleaks dir "$test_dir/blocked/$case" --config "$config" --redact=100 --no-banner \
+              --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
+              echo "Gitleaks policy regression: $case was not detected." >&2
+              exit 1
+            fi
+          done
 
       - name: Scan committed files and history
         working-directory: incoming
