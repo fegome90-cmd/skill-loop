@@ -49,6 +49,12 @@ Para propósito y términos, [CONTEXT.md](CONTEXT.md).
 
 ## Evidencia y pendientes
 
-- El grafo previo (graphify 0.9.26, 3 nodos) describía el scaffold `skill_loop`
-  retirado en el merge; regenerarlo cuando `src/skillrun.py` tenga lógica.
-- Pendiente: filas por sección del módulo al cierre de cada fase.
+- Grafo regenerado con graphify 0.9.26 sobre `src/skillrun.py` en el commit de
+  cierre de Fase 1 (`ddced5f`), excluyendo `.agents/**` y `reference/**`:
+  **84 nodos y 173 aristas**. Nodos de interés: `src_skillrun`,
+  `src_skillrun_plugin`, `src_skillrun_skill`, `src_skillrun_step`,
+  `src_skillrun_pluginerror`. Es evidencia derivada y no se versiona.
+- El grafo anterior describía el scaffold `skill_loop`, retirado en el merge, y
+  ya no aplica.
+- Pendiente: cuando el módulo crezca por fase, añadir filas por sección; hoy el
+  mapa apunta a `src/skillrun.py` completo a propósito.
