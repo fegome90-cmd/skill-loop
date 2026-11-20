@@ -1,8 +1,11 @@
 import copy
 import json
+from collections.abc import Iterable
 from dataclasses import FrozenInstanceError, is_dataclass
 from enum import IntEnum
+from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import pytest
 
@@ -10,25 +13,27 @@ import skillrun
 
 COMPLETE_DIGEST = "1ce92ddbb70be340df8678330754b697546a466dca842faa06ccd1f9311c3f42"
 
+type FieldTarget = tuple[str, *tuple[str | int, ...]]
+
 
 class _Severity(IntEnum):
     LOW = 1
 
 
-def _field_parent(data, target):
+def _field_parent(data: Any, target: tuple[str | int, ...]) -> Any:
     for part in target[:-1]:
         data = data[part]
     return data
 
 
-def _field_path(target):
+def _field_path(target: FieldTarget) -> str:
     path = target[0]
     for part in target[1:]:
         path += f"[{part}]" if isinstance(part, int) else f".{part}"
     return path
 
 
-def _error_paths(errors):
+def _error_paths(errors: Iterable[str]) -> set[str]:
     paths = set()
     for error in errors:
         path, separator, message = error.partition(": ")
@@ -37,7 +42,7 @@ def _error_paths(errors):
     return paths
 
 
-def _assert_message(errors, path, keyword):
+def _assert_message(errors: Iterable[str], path: str, keyword: str) -> None:
     assert any(
         error_path == path and keyword in message.lower()
         for error_path, _, message in (error.partition(": ") for error in errors)
@@ -58,13 +63,13 @@ def _assert_message(errors, path, keyword):
         ("EXIT_CANCELLED", 130),
     ],
 )
-def test_public_constants(name, value):
+def test_public_constants(name: str, value: object) -> None:
     actual = getattr(skillrun, name)
     assert type(actual) is type(value)
     assert actual == value
 
 
-def test_validate_accepts_valid_examples_without_mutating_them(valid_plugin_file):
+def test_validate_accepts_valid_examples_without_mutating_them(valid_plugin_file: Path) -> None:
     data = json.loads(valid_plugin_file.read_text(encoding="utf-8"))
     original = copy.deepcopy(data)
     assert skillrun.validate_plugin_data(data) == []
@@ -77,8 +82,8 @@ def test_validate_accepts_valid_examples_without_mutating_them(valid_plugin_file
     ids=["min-length", "max-length"],
 )
 def test_validate_accepts_boundary_names_step_count_and_relative_path(
-    plugin_data, name, result_field
-):
+    plugin_data: dict[str, Any], name: str, result_field: str
+) -> None:
     plugin_data["id"] = name
     plugin_data["skills"][name] = plugin_data["skills"].pop("research")
     plugin_data["skills"][name]["path"] = ".skills/release..notes/SKILL.md"
@@ -94,7 +99,7 @@ def test_validate_accepts_boundary_names_step_count_and_relative_path(
 
 
 @pytest.mark.parametrize("data", [None, [], True, "plugin"])
-def test_validate_rejects_non_object_root(data):
+def test_validate_rejects_non_object_root(data: object) -> None:
     assert _error_paths(skillrun.validate_plugin_data(data)) == {"$"}
 
 
@@ -114,7 +119,9 @@ def test_validate_rejects_non_object_root(data):
         ("on_done", "directive"),
     ],
 )
-def test_validate_rejects_missing_required_fields(plugin_data, target):
+def test_validate_rejects_missing_required_fields(
+    plugin_data: dict[str, Any], target: FieldTarget
+) -> None:
     del _field_parent(plugin_data, target)[target[-1]]
     assert _field_path(target) in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
@@ -128,7 +135,9 @@ def test_validate_rejects_missing_required_fields(plugin_data, target):
         ("on_done", "extra"),
     ],
 )
-def test_validate_rejects_unknown_keys_at_each_fixed_schema_level(plugin_data, target):
+def test_validate_rejects_unknown_keys_at_each_fixed_schema_level(
+    plugin_data: dict[str, Any], target: FieldTarget
+) -> None:
     _field_parent(plugin_data, target)[target[-1]] = None
     _assert_message(skillrun.validate_plugin_data(plugin_data), _field_path(target), "unknown")
 
@@ -200,25 +209,29 @@ def test_validate_rejects_unknown_keys_at_each_fixed_schema_level(plugin_data, t
         (("steps", 1, "result", "evidence"), True),
     ],
 )
-def test_validate_rejects_invalid_field_values(plugin_data, target, value):
+def test_validate_rejects_invalid_field_values(
+    plugin_data: dict[str, Any], target: FieldTarget, value: object
+) -> None:
     _field_parent(plugin_data, target)[target[-1]] = value
     assert _field_path(target) in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
 @pytest.mark.parametrize("name", ["Research", "-research", "a_b", "a" * 65])
-def test_validate_rejects_invalid_skill_names(plugin_data, name):
+def test_validate_rejects_invalid_skill_names(plugin_data: dict[str, Any], name: str) -> None:
     plugin_data["skills"][name] = plugin_data["skills"].pop("research")
     plugin_data["steps"][1]["skill"] = name
     assert f"skills.{name}" in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
 @pytest.mark.parametrize("name", ["Evidence", "1evidence", "with-hyphen", "a" * 65])
-def test_validate_rejects_invalid_result_field_names(plugin_data, name):
+def test_validate_rejects_invalid_result_field_names(
+    plugin_data: dict[str, Any], name: str
+) -> None:
     plugin_data["steps"][1]["result"][name] = "string"
     assert f"steps[1].result.{name}" in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
-def test_validate_handles_non_string_mapping_keys(plugin_data):
+def test_validate_handles_non_string_mapping_keys(plugin_data: dict[str, Any]) -> None:
     plugin_data["skills"][True] = plugin_data["skills"].pop("research")
     plugin_data["steps"][1]["skill"] = True
     plugin_data["steps"][1]["result"][17] = "string"
@@ -229,7 +242,7 @@ def test_validate_handles_non_string_mapping_keys(plugin_data):
 
 
 @pytest.mark.parametrize("pin_count", [0, 2])
-def test_validate_requires_exactly_one_pin(plugin_data, pin_count):
+def test_validate_requires_exactly_one_pin(plugin_data: dict[str, Any], pin_count: int) -> None:
     research = plugin_data["skills"]["research"]
     if pin_count == 0:
         del research["sha256"]
@@ -240,30 +253,34 @@ def test_validate_requires_exactly_one_pin(plugin_data, pin_count):
     assert paths & {"skills.research", "skills.research.sha256", "skills.research.git_blob"}
 
 
-def test_validate_rejects_unused_skill(plugin_data):
+def test_validate_rejects_unused_skill(plugin_data: dict[str, Any]) -> None:
     plugin_data["skills"]["unused"] = {"path": "skills/unused/SKILL.md", "sha256": "a" * 64}
     _assert_message(skillrun.validate_plugin_data(plugin_data), "skills.unused", "unused")
 
 
-def test_validate_rejects_seventeen_steps(plugin_data):
+def test_validate_rejects_seventeen_steps(plugin_data: dict[str, Any]) -> None:
     for index in range(14):
         plugin_data["steps"].append(dict(plugin_data["steps"][1], id=f"step-{index}"))
     assert "steps" in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
 @pytest.mark.parametrize(("index", "kind"), [(0, "skill"), (1, "grilling"), (2, "grilling")])
-def test_validate_requires_grilling_at_index_zero_only(plugin_data, index, kind):
+def test_validate_requires_grilling_at_index_zero_only(
+    plugin_data: dict[str, Any], index: int, kind: str
+) -> None:
     plugin_data["steps"][index]["kind"] = kind
     assert f"steps[{index}].kind" in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
-def test_validate_rejects_duplicate_step_ids(plugin_data):
+def test_validate_rejects_duplicate_step_ids(plugin_data: dict[str, Any]) -> None:
     plugin_data["steps"][2]["id"] = plugin_data["steps"][1]["id"]
     paths = _error_paths(skillrun.validate_plugin_data(plugin_data))
     assert paths & {"steps[1].id", "steps[2].id"}
 
 
-def test_validate_reports_all_errors_in_sorted_order_without_mutating_input(plugin_data):
+def test_validate_reports_all_errors_in_sorted_order_without_mutating_input(
+    plugin_data: dict[str, Any],
+) -> None:
     plugin_data["schema"] = "skillrun/v2"
     plugin_data["description"] = []
     plugin_data["skills"]["research"]["sha256"] = "invalid"
@@ -285,7 +302,7 @@ def test_validate_reports_all_errors_in_sorted_order_without_mutating_input(plug
     assert plugin_data == original
 
 
-def test_load_exposes_plugin_skill_and_step_fields(valid_plugin_file):
+def test_load_exposes_plugin_skill_and_step_fields(valid_plugin_file: Path) -> None:
     data = json.loads(valid_plugin_file.read_text(encoding="utf-8"))
     plugin = skillrun.load_plugin(valid_plugin_file)
 
@@ -315,7 +332,7 @@ def test_load_exposes_plugin_skill_and_step_fields(valid_plugin_file):
         assert step.instruction == raw_step.get("instruction")
 
 
-def test_load_returns_frozen_dataclasses(valid_plugin_file):
+def test_load_returns_frozen_dataclasses(valid_plugin_file: Path) -> None:
     plugin = skillrun.load_plugin(valid_plugin_file)
     for instance, field in [
         (plugin, "id"),
@@ -327,7 +344,9 @@ def test_load_returns_frozen_dataclasses(valid_plugin_file):
             setattr(instance, field, "changed")
 
 
-def test_load_resolves_source_for_relative_string_path(tmp_path, monkeypatch, plugin_data):
+def test_load_resolves_source_for_relative_string_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, plugin_data: dict[str, Any]
+) -> None:
     path = tmp_path / "plugin.json"
     path.write_text(json.dumps(plugin_data), encoding="utf-8")
     (tmp_path / "nested").mkdir()
@@ -336,7 +355,7 @@ def test_load_resolves_source_for_relative_string_path(tmp_path, monkeypatch, pl
     assert skillrun.load_plugin("nested/../plugin.json").source == path.resolve()
 
 
-def test_digest_uses_canonical_utf8_json(plugin_data, tmp_path):
+def test_digest_uses_canonical_utf8_json(plugin_data: dict[str, Any], tmp_path: Path) -> None:
     compact = json.dumps(plugin_data, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     reformatted = tmp_path / "reformatted.json"
     reformatted.write_text(compact, encoding="utf-8")
@@ -355,7 +374,9 @@ def test_digest_uses_canonical_utf8_json(plugin_data, tmp_path):
         pytest.param(b'["not-an-object"]', id="non-object-json"),
     ],
 )
-def test_load_reports_file_and_root_errors_at_dollar(tmp_path, contents):
+def test_load_reports_file_and_root_errors_at_dollar(
+    tmp_path: Path, contents: bytes | None
+) -> None:
     path = tmp_path / "plugin.json"
     if contents is not None:
         path.write_bytes(contents)
@@ -379,7 +400,11 @@ def test_load_reports_file_and_root_errors_at_dollar(tmp_path, contents):
     ],
     ids=["root", "skills-map", "skill", "step", "result", "on-done"],
 )
-def test_load_rejects_duplicate_json_keys_at_any_depth(plugin_data, tmp_path, target):
+def test_load_rejects_duplicate_json_keys_at_any_depth(
+    plugin_data: dict[str, Any],
+    tmp_path: Path,
+    target: tuple[str] | tuple[str, *tuple[str | int, ...], str],
+) -> None:
     key = target[-1]
     value = _field_parent(plugin_data, target)[key]
     document = json.dumps(plugin_data)
@@ -397,7 +422,9 @@ def test_load_rejects_duplicate_json_keys_at_any_depth(plugin_data, tmp_path, ta
     _assert_message(errors, "$", key)
 
 
-def test_load_reports_all_schema_errors_in_a_sorted_tuple(tmp_path, plugin_data):
+def test_load_reports_all_schema_errors_in_a_sorted_tuple(
+    tmp_path: Path, plugin_data: dict[str, Any]
+) -> None:
     plugin_data["id"] = True
     plugin_data["steps"][1]["instruction"] = ""
     plugin_data["skills"]["research"]["path"] = "../research/SKILL.md"
@@ -415,7 +442,7 @@ def test_load_reports_all_schema_errors_in_a_sorted_tuple(tmp_path, plugin_data)
     assert list(errors) == skillrun.validate_plugin_data(plugin_data)
 
 
-def test_check_result_accepts_every_exact_type_and_untyped_nested_content():
+def test_check_result_accepts_every_exact_type_and_untyped_nested_content() -> None:
     contract = MappingProxyType(
         {
             "summary": "string",
@@ -436,7 +463,7 @@ def test_check_result_accepts_every_exact_type_and_untyped_nested_content():
 
 
 @pytest.mark.parametrize("value", [None, [], True, "summary"])
-def test_check_result_requires_a_dict(value):
+def test_check_result_requires_a_dict(value: object) -> None:
     assert _error_paths(skillrun.check_result({"summary": "string"}, value)) == {"result"}
 
 
@@ -453,13 +480,13 @@ def test_check_result_requires_a_dict(value):
         ("boolean", 1),
     ],
 )
-def test_check_result_rejects_inexact_types(type_name, value):
+def test_check_result_rejects_inexact_types(type_name: str, value: object) -> None:
     assert _error_paths(skillrun.check_result({"field": type_name}, {"field": value})) == {
         "result.field"
     }
 
 
-def test_check_result_reports_missing_extra_and_mistyped_fields_in_order():
+def test_check_result_reports_missing_extra_and_mistyped_fields_in_order() -> None:
     errors = skillrun.check_result(
         {"z_missing": "string", "a_wrong_type": "integer"},
         {"middle_extra": "extra", "a_wrong_type": False},
@@ -472,13 +499,15 @@ def test_check_result_reports_missing_extra_and_mistyped_fields_in_order():
     assert errors == sorted(errors)
 
 
-def test_validate_requires_grilling_skill_in_first_step(plugin_data):
+def test_validate_requires_grilling_skill_in_first_step(plugin_data: dict[str, Any]) -> None:
     plugin_data["steps"][0]["skill"] = "research"
     plugin_data["skills"].pop("grilling")
     assert "steps[0].skill" in _error_paths(skillrun.validate_plugin_data(plugin_data))
 
 
-def test_load_reports_unencodable_text_together_with_schema_errors(tmp_path, plugin_data):
+def test_load_reports_unencodable_text_together_with_schema_errors(
+    tmp_path: Path, plugin_data: dict[str, Any]
+) -> None:
     path = tmp_path / "plugin.json"
     raw = json.dumps(plugin_data | {"id": False, "description": "x"})
     path.write_text(raw.replace('"x"', '"\\ud800"'), encoding="utf-8")

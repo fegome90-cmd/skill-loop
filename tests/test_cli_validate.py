@@ -2,20 +2,25 @@ import json
 import os
 import subprocess
 import sys
+from os import PathLike
+from pathlib import Path
+from typing import Any, NoReturn
 
 import pytest
 
 import skillrun
 
 
-def _read_json_line(stdout):
+def _read_json_line(stdout: str) -> dict[str, Any]:
     assert len(stdout.splitlines()) == 1, repr(stdout)
     response = json.loads(stdout)
     assert isinstance(response, dict)
     return response
 
 
-def test_validate_main_accepts_unavailable_skill_files(valid_plugin_file, capsys):
+def test_validate_main_accepts_unavailable_skill_files(
+    valid_plugin_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     data = json.loads(valid_plugin_file.read_text(encoding="utf-8"))
     for skill in data["skills"].values():
         assert not (valid_plugin_file.parent / skill["path"]).exists()
@@ -40,7 +45,9 @@ def test_validate_main_accepts_unavailable_skill_files(valid_plugin_file, capsys
         pytest.param('{"id":"first","id":"second"}', id="duplicate-key"),
     ],
 )
-def test_validate_main_maps_plugin_errors_to_blocked_response(tmp_path, contents, capsys):
+def test_validate_main_maps_plugin_errors_to_blocked_response(
+    tmp_path: Path, contents: str | None, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = tmp_path / "plugin.json"
     if contents is not None:
         path.write_text(contents, encoding="utf-8")
@@ -56,8 +63,10 @@ def test_validate_main_maps_plugin_errors_to_blocked_response(tmp_path, contents
     assert output.err.strip()
 
 
-def test_validate_main_maps_unexpected_exceptions_to_internal_error(monkeypatch, capsys):
-    def fail(_path):
+def test_validate_main_maps_unexpected_exceptions_to_internal_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail(_path: str | PathLike[str]) -> NoReturn:
         raise RuntimeError("unexpected loader failure")
 
     monkeypatch.setattr(skillrun, "load_plugin", fail)
@@ -78,7 +87,9 @@ def test_validate_main_maps_unexpected_exceptions_to_internal_error(monkeypatch,
         pytest.param(["validate"], id="missing-path"),
     ],
 )
-def test_main_returns_usage_error_without_system_exit(argv, capsys):
+def test_main_returns_usage_error_without_system_exit(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
     assert skillrun.main(argv) == 2
     stdout = capsys.readouterr().out
     if stdout.strip():
@@ -86,7 +97,9 @@ def test_main_returns_usage_error_without_system_exit(argv, capsys):
 
 
 @pytest.mark.parametrize("valid", [True, False], ids=["valid-plugin", "invalid-plugin"])
-def test_python_module_validate_emits_one_json_line(repo_root, tmp_path, plugin_data, valid):
+def test_python_module_validate_emits_one_json_line(
+    repo_root: Path, tmp_path: Path, plugin_data: dict[str, Any], valid: bool
+) -> None:
     path = tmp_path / "plugin.json"
     if not valid:
         plugin_data["steps"][0]["result"]["summary"] = "invalid-type"
@@ -118,7 +131,9 @@ def test_python_module_validate_emits_one_json_line(repo_root, tmp_path, plugin_
         assert completed.stderr.strip()
 
 
-def test_validate_main_rejects_placeholder_pin_in_github_gateway(repo_root, capsys):
+def test_validate_main_rejects_placeholder_pin_in_github_gateway(
+    repo_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     plugin_file = repo_root / "plugins" / "github-gateway" / "plugin.json"
     assert skillrun.main(["validate", str(plugin_file)]) == 10
 

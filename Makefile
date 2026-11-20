@@ -10,7 +10,7 @@ lint: lint-python lint-docs lint-yaml
 lint-python:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy src
+	uv run mypy src tests
 	uv run bandit -c pyproject.toml -r src
 	uv run codespell
 

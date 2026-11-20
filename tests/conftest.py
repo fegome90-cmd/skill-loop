@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,7 @@ def valid_plugin_file(request: pytest.FixtureRequest) -> Path:
 
 
 @pytest.fixture
-def plugin_data() -> dict[str, object]:
+def plugin_data() -> dict[str, Any]:
     data: object = json.loads((PLUGIN_FIXTURES / "complete.json").read_text(encoding="utf-8"))
     assert isinstance(data, dict)
     return data

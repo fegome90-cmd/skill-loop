@@ -27,7 +27,7 @@ Todos se ejecutan desde la raíz del repositorio.
 | Lint completo | `make lint` o `make check` | `Makefile` | Solo leído; se ejecutaron sus componentes de Python por separado |
 | Ruff lint | `uv run ruff check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, "All checks passed!" |
 | Formato | `uv run ruff format --check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, 18 archivos ya formateados |
-| Tipos | `uv run mypy src` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin hallazgos en 1 archivo |
+| Tipos | `uv run mypy src tests` | `Makefile` (`lint-python`) | strict sobre código y tests (tests tipados tras la Fase 1) |
 | Seguridad | `uv run bandit -c pyproject.toml -r src` | `Makefile` (`lint-python`) | Ejecutado: código 0, 0 hallazgos |
 | Ortografía | `uv run codespell` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin salida |
 | Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 1: código 0, 158 passed |
