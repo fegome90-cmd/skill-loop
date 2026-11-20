@@ -60,8 +60,10 @@ repo (`~/.local/state/skillrun/<run_id>/`, 0700/0600). Sin red propia.
 
 ## Estado de implementación
 
-- Fase 1 en curso: `src/skillrun.py` es un scaffold con `__version__`; el
-  esquema de plugin y `skillrun validate` se construyen en esta fase.
+- Fase 1 cerrada: `src/skillrun.py` contiene el modelo (`Plugin`, `Skill`,
+  `Step`, `PluginError`), `validate_plugin_data`, `load_plugin`,
+  `plugin_digest`, `check_result` y `main` con el subcomando `validate`.
+  Máquina de estados, recibos y host llegan en las Fases 2–3.
 - `make lint` no ejecuta pytest; la suite se corre con `uv run pytest`.
 
 ## Evidencia y pendientes

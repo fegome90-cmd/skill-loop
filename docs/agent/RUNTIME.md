@@ -30,7 +30,8 @@ Todos se ejecutan desde la raíz del repositorio.
 | Tipos | `uv run mypy src` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin hallazgos en 1 archivo |
 | Seguridad | `uv run bandit -c pyproject.toml -r src` | `Makefile` (`lint-python`) | Ejecutado: código 0, 0 hallazgos |
 | Ortografía | `uv run codespell` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin salida |
-| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | `tests/` existe desde el merge; estado al cierre de cada fase en su handoff |
+| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 1: código 0, 158 passed |
+| Validar un plugin | `uv run skillrun validate <plugin.json>` | `src/skillrun.py` (`main`) | Ejecutado: 0 válido, 10 inválido (`plugins/github-gateway` por pin pendiente), 2 uso |
 | Markdown | `uv run pre-commit run markdownlint-cli2 --all-files` | `Makefile` (`lint-docs`) | Solo leído |
 | YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml` | `Makefile` (`lint-yaml`) | Solo leído |
 | Hooks de Git | `uv run pre-commit install` | `Makefile` (`hooks`) | Solo leído (pre-commit 4.7.0 disponible) |

@@ -1,3 +1,5 @@
+# CLAUDE.md
+
 @AGENTS.md
 
 ## Notas para Claude Code

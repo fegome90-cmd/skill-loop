@@ -2,14 +2,14 @@
 
 ## Estado
 
-`v0.1.0 — Fase 1 en curso.` Repositorio `skill-loop`; producto, CLI y módulo
+`v0.1.0 — Fase 1 cerrada` (esquema de plugin + `skillrun validate`). Repositorio `skill-loop`; producto, CLI y módulo
 `skillrun`. CLI que lanza y controla un agente (Pi RPC primero) para ejecutar las
 skills de un plugin **en orden**, con `grilling` como paso 1 obligatorio. Plan,
 decisiones y fases: [PLAN.md](PLAN.md).
 
 Solo existe lo que la fase cerrada más reciente declara en su handoff
 (`handoffs/`). No afirmes que `skillrun run`, `status` o `reconcile` existen
-antes de su fase.
+antes de su fase. Hoy existe solo `skillrun validate <plugin.json>`.
 
 ## Lectura por intención
 
@@ -106,6 +106,7 @@ make format    # ruff format + ruff check --fix + markdownlint --fix
 make hooks     # pre-commit install + run --all-files
 make check     # alias de lint
 uv run pytest  # suite de tests
+uv run skillrun validate <plugin.json>  # 0 válido · 10 inválido · 70 interno · 2 uso
 ```
 
 ## Evidencia y pendientes
