@@ -166,6 +166,8 @@ def test_validate_rejects_unknown_keys_at_each_fixed_schema_level(
         (("skills", "research", "path"), True),
         (("skills", "research", "path"), ""),
         (("skills", "research", "path"), "/skills/research/SKILL.md"),
+        (("skills", "research", "path"), "C:/outside/SKILL.md"),
+        (("skills", "research", "path"), "C:outside/SKILL.md"),
         (("skills", "research", "path"), "../research/SKILL.md"),
         (("skills", "research", "path"), "skills/../research/SKILL.md"),
         (("skills", "research", "path"), "skills/research/.."),

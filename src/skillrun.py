@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from os import PathLike
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import TypeGuard
 
@@ -95,11 +95,14 @@ def _check_skill(skill: object, at: str) -> list[str]:
     if (
         not _has_text(path)
         or path.startswith("/")
+        or PureWindowsPath(path).drive  # C:/x o C:x son absolutos/rooted en Windows
         or "\\" in path
         or "\x00" in path
         or ".." in path.split("/")
     ):
-        errors.append(f"{at}.path: expected a relative path without NUL, backslashes or '..'")
+        errors.append(
+            f"{at}.path: expected a relative path without drive, NUL, backslashes or '..'"
+        )
     if len(skill.keys() & _PIN_LENGTHS.keys()) != 1:
         errors.append(f"{at}: expected exactly one of sha256 or git_blob")
     for pin, length in _PIN_LENGTHS.items():
