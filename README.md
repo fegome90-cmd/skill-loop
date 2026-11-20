@@ -93,6 +93,20 @@ El snapshot local existe solo para referencia determinista y offline.
 
 Ver [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
 
+## Colaboración
+
+`main` está protegida: todo cambio entra por pull request y requiere el check
+`Secrets and private paths`.
+
+- Plantilla de PR: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
+- Verificación local: usá los comandos de [Calidad](#calidad) cuando el proyecto
+  Python esté incorporado en `main`.
+- Seguridad: `./scripts/check-secrets.sh staged` (requiere
+  [Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1))
+  o activá el hook con `git config core.hooksPath .githooks`. El hook corre el
+  escaneo y, si está instalado, `pre-commit`.
+- Reportes de seguridad: ver [`SECURITY.md`](SECURITY.md); no abras issues públicos.
+
 ## Licencia
 
-MIT.
+[MIT](LICENSE).
