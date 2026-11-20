@@ -16,6 +16,7 @@ lint-python:
 
 lint-docs:
 	uv run pre-commit run markdownlint-cli2 --all-files
+	uv run python tools/check_agent_docs.py --no-coupling
 
 lint-yaml:
 	uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock

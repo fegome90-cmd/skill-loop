@@ -1,3 +1,6 @@
+# Contenido vendorizado y de terceros: no se reescribe ni se lintea.
+exclude: ^(\.agents/skills/|reference/)
+
 repos:
   # Spelling (fast)
   - repo: https://github.com/codespell-project/codespell
@@ -62,3 +65,13 @@ repos:
       - id: bandit
         args: [-c, pyproject.toml]
         additional_dependencies: ["bandit[toml]"]
+
+  # Documentación de agentes (local, sin red)
+  - repo: local
+    hooks:
+      - id: agent-docs
+        name: agent-docs (estructura y acoplamiento)
+        entry: uv run python tools/check_agent_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -1,0 +1,54 @@
+# Dónde empezar
+
+Mapa superficial para elegir por dónde leer. No es un inventario. Los comandos y
+su estado de verificación viven en [RUNTIME.md](RUNTIME.md); las
+responsabilidades e invariantes, en [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Entradas y áreas
+
+| Ruta o símbolo | Para qué leerlo |
+| --- | --- |
+| `AGENTS.md` | Reglas operativas, fuente de verdad y alcance |
+| `PLAN.md` | Decisiones cerradas, diseño (§5), errores a evitar (§4) y fases (§6) |
+| `handoffs/` | Estado real al cierre de cada fase |
+| `README.md` | Qué existe, qué no existe y stack de calidad |
+| `docs/CONSTITUTION.md` | Procedencia, precedencia y actualización del snapshot |
+| `docs/constitution/SOURCE.lock` | Commit, ruta y SHA-256 del origen canónico |
+| `docs/constitution/AGENTIC-CONSTITUTION.md` | Texto normativo de referencia (no se edita a mano) |
+| `src/skillrun.py` | App completa (módulo único) |
+| `tests/` | Suite pytest y fixtures |
+| `plugins/github-gateway/plugin.json` | Plugin de ejemplo `skillrun/v1` |
+| `.agents/skills-lock.json` | Pins (git blob) de las skills vendorizadas |
+| `pyproject.toml` | Python mínimo, empaquetado y configuración de Ruff, mypy, pytest y Bandit |
+| `Makefile` | Objetivos reales de instalación, lint, formato y hooks |
+| `.pre-commit-config.yaml` | Revisores y versiones que fijan la calidad |
+
+## Superficies de cambio
+
+| Si cambia… | Empezar por… | Revisar también… | Verificación pertinente |
+| --- | --- | --- | --- |
+| El esquema de plugin o la CLI | `src/skillrun.py` | `PLAN.md` §5, `README.md`, `plugins/` | `uv run pytest` |
+| Una herramienta de calidad o su configuración | `pyproject.toml` o el archivo de configuración correspondiente | `Makefile`, `.pre-commit-config.yaml`, `README.md` | lint de [RUNTIME.md](RUNTIME.md) |
+| Un objetivo del `Makefile` | `Makefile` | [RUNTIME.md](RUNTIME.md), `README.md` | ejecutar el objetivo y registrar el resultado |
+| El snapshot constitucional | `docs/constitution/AGENTIC-CONSTITUTION.md` y `SOURCE.lock` en el mismo commit | `docs/CONSTITUTION.md`, `README.md` | comparar SHA-256 con el lock |
+| El Python mínimo o el empaquetado | `pyproject.toml` | `uv.lock`, `Makefile` | lint y tipos de [RUNTIME.md](RUNTIME.md) |
+| Las reglas para agentes | `AGENTS.md` | `docs/agent/*` | markdownlint |
+| La documentación de agentes | `docs/agent/*` | `AGENTS.md` (tabla de lectura por intención) | `agent_docs_kit.py check` y markdownlint |
+
+## Recorrido de lectura
+
+1. `AGENTS.md` — qué está prohibido antes de tocar nada.
+2. `PLAN.md` y el último handoff — qué se decidió y dónde estamos.
+3. `README.md` — qué existe y qué no.
+4. `pyproject.toml` — herramientas, versiones y configuración.
+5. `Makefile` — qué se ejecuta y en qué orden.
+6. `docs/CONSTITUTION.md` — procedencia y precedencia.
+7. [ARCHITECTURE.md](ARCHITECTURE.md) — invariantes.
+
+Para propósito y términos, [CONTEXT.md](CONTEXT.md).
+
+## Evidencia y pendientes
+
+- El grafo previo (graphify 0.9.26, 3 nodos) describía el scaffold `skill_loop`
+  retirado en el merge; regenerarlo cuando `src/skillrun.py` tenga lógica.
+- Pendiente: filas por sección del módulo al cierre de cada fase.
