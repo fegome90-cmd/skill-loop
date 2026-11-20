@@ -2,14 +2,14 @@
 
 ## Estado
 
-`v0.1.0 — Fase 1 cerrada` (esquema de plugin + `skillrun validate`). Repositorio `skill-loop`; producto, CLI y módulo
-`skillrun`. CLI que lanza y controla un agente (Pi RPC primero) para ejecutar las
-skills de un plugin **en orden**, con `grilling` como paso 1 obligatorio. Plan,
-decisiones y fases: [PLAN.md](PLAN.md).
+`v0.1.0 — Fase 2 cerrada`. El repositorio `skill-loop` contiene el módulo y CLI
+`skillrun`. La CLI expone `skillrun validate <plugin.json>`. El motor interno
+expone `run_plugin()` y `reconcile()` y está verificado con un host falso.
 
-Solo existe lo que la fase cerrada más reciente declara en su handoff
-(`handoffs/`). No afirmes que `skillrun run`, `status` o `reconcile` existen
-antes de su fase. Hoy existe solo `skillrun validate <plugin.json>`.
+Para retomar el proyecto, consulta [PLAN.md](PLAN.md) y el
+[handoff de Fase 2](handoffs/HANDOFF-2026-11-20-PHASE-2.md). Pi RPC se integra
+en la Fase 3. Los subcomandos `run`, `status` y `reconcile` corresponden a la
+Fase 5.
 
 ## Lectura por intención
 
@@ -44,8 +44,8 @@ mismo commit; nunca se edita el snapshot a mano.
   `src/skillrun.py`; console script `skillrun = "skillrun:main"`.
 - Dev: Ruff, mypy estricto, pytest, Bandit, codespell, yamllint,
   markdownlint-cli2, shellcheck y pre-commit.
-- skillrun no llama a red ni a LLMs por sí mismo; lanza al host agente (Pi)
-  como subproceso y lo controla.
+- El motor delega las operaciones del agente a la interfaz `Host`. El
+  adaptador que inicia y controla Pi como subproceso corresponde a la Fase 3.
 
 ## Reglas duras
 
@@ -82,7 +82,7 @@ mismo commit; nunca se edita el snapshot a mano.
 
 ```text
 src/skillrun.py       app completa (módulo único)
-tests/                pytest + fixtures (+ fake_pi.py desde Fase 3)
+tests/                pytest + fixtures + fake_host.py
 plugins/              plugins de ejemplo (plugin.json)
 .agents/skills/       skill de entrada (Fase 5) + skills de Matt Pocock
                       vendorizadas, fijadas en .agents/skills-lock.json

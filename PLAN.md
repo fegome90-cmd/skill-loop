@@ -189,7 +189,7 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 | # | Fase | Listo cuando | Tokens est. | Real | Modelo / esfuerzo | Estado |
 |---|---|---|---|---|---|---|
 | 1 | Repo + esquema de plugin | `skillrun validate` acepta/rechaza plugins de ejemplo; tests verdes | 30–50 k | no medido (orquestador, worker y tester) | Opus 5.5 orq. + Codex gpt-6.2-sol (worker high, tester xhigh) | hecho (2026-11-20) |
-| 2 | Máquina de estados + recibos + lock | Run completo con host falso; tests de crash en cada etapa | 50–80 k | — | Opus 5.5 / medio | pendiente |
+| 2 | Máquina de estados + recibos + lock | Run completo con host falso; tests de crash en cada etapa | 50–80 k | no medido por rol | Opus 5.5 / medio (arranque), Codex `gpt-6.2-sol` / `xhigh` (orquestación), `high` (WORKER), `xhigh` (TESTER) | hecho (2026-11-20) |
 | 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | — | Opus 5.5 / medio | pendiente |
 | 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | — | Sonnet 5.5 / medio | pendiente |
 | 5 | CLI (`run/status/reconcile`), skill de entrada, README | Comandos documentados y probados | 25–40 k | — | Sonnet 5.5 / bajo | pendiente |
@@ -198,6 +198,8 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 | 8 | (Después) Adaptador Codex CLI | Por definir | — | — | — | futuro |
 
 Dependencias: cada fase usa lo construido en las anteriores; la 6 requiere Pi 1.4+ instalado y el `SKILL.md` de grilling fijado.
+
+Último cierre: [Fase 2](handoffs/HANDOFF-2026-11-20-PHASE-2.md).
 
 ## 7. Estructura del repo
 

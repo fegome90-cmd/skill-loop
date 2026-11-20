@@ -11,7 +11,7 @@ Composición e invariantes de `skillrun`. El diseño completo está en
 | Procedencia | `docs/constitution/AGENTIC-CONSTITUTION.md`, `docs/constitution/SOURCE.lock` | Texto canónico de referencia y su identidad verificable |
 | Mapeo | `docs/CONSTITUTION.md` | Precedencia, estado y procedimiento de actualización del snapshot |
 | Código | `src/skillrun.py` | App completa en un módulo (esquema, máquina de estados, host, CLI según fase) |
-| Tests | `tests/` | pytest; fixtures de plugins; `fake_pi.py` desde Fase 3 |
+| Tests | `tests/` | pytest, fixtures de plugins y host falso (`fake_host.py`) |
 | Plugins | `plugins/*/plugin.json` | Plugins de ejemplo `skillrun/v1` |
 | Skills vendorizadas | `.agents/skills/`, `.agents/skills-lock.json` | Copias fijadas por git blob; no se editan ni lintean |
 | Plan y cierres | `PLAN.md`, `handoffs/`, `prompts/`, `reference/REVIEWS.md` | Decisiones, fases y errores conocidos |
@@ -19,8 +19,9 @@ Composición e invariantes de `skillrun`. El diseño completo está en
 | Calidad | `Makefile`, `.pre-commit-config.yaml`, `.yamllint.yaml`, `.markdownlint-cli2.jsonc`, `.codespellrc`, `.shellcheckrc` | Objetivos y configuración de lint |
 | Documentación para agentes | `AGENTS.md`, `docs/agent/*` | Entrada, contexto, arquitectura, mapa y operación |
 
-La CLI lanza al host agente como subproceso. El estado de runs vive fuera del
-repo (`~/.local/state/skillrun/<run_id>/`, 0700/0600). Sin red propia.
+El motor supervisa un `Host` inyectado. La Fase 3 añade el adaptador Pi RPC.
+El estado de runs vive fuera del repositorio en la raíz privada definida por
+el contrato de [PLAN.md](../../PLAN.md) §5.9.
 
 ## Responsabilidades
 
@@ -60,15 +61,14 @@ repo (`~/.local/state/skillrun/<run_id>/`, 0700/0600). Sin red propia.
 
 ## Estado de implementación
 
-- Fase 1 cerrada: `src/skillrun.py` contiene el modelo (`Plugin`, `Skill`,
-  `Step`, `PluginError`), `validate_plugin_data`, `load_plugin`,
-  `plugin_digest`, `check_result` y `main` con el subcomando `validate`.
-  Máquina de estados, recibos y host llegan en las Fases 2–3.
-- `make lint` no ejecuta pytest; la suite se corre con `uv run pytest`.
+- Fase 2 cerrada. `run_plugin()` coordina el host, el lock, los recibos y la
+  validación de resultados. `reconcile()` registra la decisión explícita
+  sobre un turno incierto. `skillrun validate` es el subcomando disponible.
+- La integración del adaptador empieza en el
+  [handoff de Fase 2](../../handoffs/HANDOFF-2026-11-20-PHASE-2.md).
 
 ## Evidencia y pendientes
 
 - Fuentes: lectura de `pyproject.toml`, `Makefile`, `README.md`,
   `docs/CONSTITUTION.md`, `docs/constitution/SOURCE.lock`,
   `src/skillrun.py`, `PLAN.md`.
-- Pendiente: actualizar esta tabla al cierre de cada fase.

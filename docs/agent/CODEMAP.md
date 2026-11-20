@@ -16,6 +16,8 @@ responsabilidades e invariantes, en [ARCHITECTURE.md](ARCHITECTURE.md).
 | `docs/constitution/SOURCE.lock` | Commit, ruta y SHA-256 del origen canónico |
 | `docs/constitution/AGENTIC-CONSTITUTION.md` | Texto normativo de referencia (no se edita a mano) |
 | `src/skillrun.py` | App completa (módulo único) |
+| `run_plugin()`, `reconcile()` en `src/skillrun.py` | Supervisor, recuperación y decisiones sobre turnos inciertos |
+| `Host`, `Turn`, `HostError` en `src/skillrun.py` | Interfaz del host para el adaptador Pi RPC |
 | `tests/` | Suite pytest y fixtures |
 | `plugins/github-gateway/plugin.json` | Plugin de ejemplo `skillrun/v1` |
 | `.agents/skills-lock.json` | Pins (git blob) de las skills vendorizadas |
@@ -56,5 +58,6 @@ Para propósito y términos, [CONTEXT.md](CONTEXT.md).
   `src_skillrun_pluginerror`. Es evidencia derivada y no se versiona.
 - El grafo anterior describía el scaffold `skill_loop`, retirado en el merge, y
   ya no aplica.
-- Pendiente: cuando el módulo crezca por fase, añadir filas por sección; hoy el
-  mapa apunta a `src/skillrun.py` completo a propósito.
+- El grafo citado arriba corresponde a la Fase 1. El
+  [handoff de Fase 2](../../handoffs/HANDOFF-2026-11-20-PHASE-2.md) registra
+  los símbolos y las comprobaciones del motor actual.
