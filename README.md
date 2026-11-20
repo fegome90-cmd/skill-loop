@@ -93,6 +93,17 @@ El snapshot local existe solo para referencia determinista y offline.
 
 Ver [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
 
+## Colaboración
+
+`main` está protegida: todo cambio entra por pull request y requiere el check
+`Secrets and private paths`.
+
+- Plantilla de PR: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
+- Verificación local: `uv sync`, `make lint`, `uv run pytest`.
+- Seguridad: `./scripts/check-secrets.sh staged` (requiere `gitleaks`) o activá
+  el hook con `git config core.hooksPath .githooks`.
+- Reportes de seguridad: ver [`SECURITY.md`](SECURITY.md); no abras issues públicos.
+
 ## Licencia
 
 MIT.

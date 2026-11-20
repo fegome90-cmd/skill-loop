@@ -1,0 +1,29 @@
+title = "skill-loop public repository policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "skill-loop-api-key-assignment"
+description = "A literal value assigned to an API key setting"
+regex = '''(?im)\b[\w.-]*api[_-]?key["']?[ \t]*[=:][ \t]*["']?([A-Za-z0-9][A-Za-z0-9_.+/=-]{11,})(?:["' \t,;}]|$)'''
+secretGroup = 1
+keywords = ["api"]
+
+[[rules.allowlists]]
+description = "Unquoted environment variable references"
+regexTarget = "match"
+regexes = ['''^[\w.-]+[ \t]*[=:][ \t]*(?:process\.env|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:[ \t;}]|$)''']
+
+[[rules]]
+id = "skill-loop-macos-home-path"
+description = "An absolute macOS user home path"
+regex = '''/Users/[A-Za-z0-9._-]+'''
+keywords = ["/users/"]
+
+[[rules]]
+id = "skill-loop-macos-temporary-path"
+description = "An absolute macOS per-user temporary path"
+regex = '''(?:/private)?/var(/folders/[A-Za-z0-9_]{2}/[A-Za-z0-9_.-]+)'''
+secretGroup = 1
+keywords = ["/var/folders/"]
