@@ -18,6 +18,30 @@ def _read_json_line(stdout: str) -> dict[str, Any]:
     return response
 
 
+def test_validate_can_load_without_posix_storage_support() -> None:
+    code = """
+import os
+import sys
+
+sys.modules['fcntl'] = None
+for name in ('O_DIRECTORY', 'O_NOFOLLOW', 'O_NONBLOCK'):
+    if hasattr(os, name):
+        delattr(os, name)
+
+import skillrun
+raise SystemExit(skillrun.main(['validate', sys.argv[1]]))
+"""
+    plugin_path = Path(__file__).parent / "fixtures" / "plugins" / "minimal.json"
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(plugin_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _read_json_line(result.stdout)["ok"] is True
+
+
 def test_validate_main_accepts_unavailable_skill_files(
     valid_plugin_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

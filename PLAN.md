@@ -143,6 +143,43 @@ class Host(Protocol):
 - `plugin_digest()`: SHA-256 del JSON canónico. `check_result()`: claves exactas y tipo exacto (`bool` ≠ `integer`).
 - Pin de `grilling` (`d2f09a18…` aquí vs `8ca78c6d…` vendorizado v1.3): no se toca; se decide en la Fase 6.
 
+### 5.9 Contrato aprobado de la Fase 2
+
+- `run_plugin(plugin, *, goal, run_id, host, console, state_root=None)` devuelve
+  `RunOutcome(status, exit_code, step_id, reason)`. Códigos: `0` complete,
+  `3` lock ocupado, `10` blocked, `70` INTERNAL, `130` abandonado o Ctrl-C.
+- `Host` expone `start(skills)`, `verify_skills(expected)`,
+  `prompt(text, on_prepared, on_accepted) -> Turn(text, leaf_id)` y `close()`.
+  `on_prepared(cursor)` persiste el recibo antes del envío. `on_accepted()`
+  registra su aceptación. El host comunica fallos mediante `HostError`.
+- `Console.confirm(step_id, result) -> (bool, event_id)`. Grilling requiere
+  confirmación positiva y registra `event_id` en `done`. En esta fase el
+  rechazo bloquea el paso. El resultado es el último bloque JSON y se valida
+  con `check_result()` antes de avanzar.
+- `state_root` usa `$XDG_STATE_HOME/skillrun` o `~/.local/state/skillrun` salvo
+  que se inyecte otra raíz. Cada run vive en `<state_root>/<run_id>/`, con
+  directorios `0700`, archivos `0600` y `flock` exclusivo no bloqueante.
+  `state.json` se valida antes de usar sus campos. Se guarda con un temporal
+  exclusivo `O_EXCL|O_NOFOLLOW`, `fsync`, reemplazo atómico y `fsync` del
+  directorio. La revisión sube en cada escritura.
+- El recibo se identifica como `<run_id>/<step_id>/<intento>`. `prepared`
+  guarda cursor y SHA del prompt. La traza del intento se limpia antes de
+  iniciarlo. `traces/<step_id>-<intento>.json` guarda `run_id`, `step_id`,
+  `receipt_id`, texto de respuesta y su SHA. `settled` guarda la referencia
+  y el SHA de la respuesta. Las referencias de eventos se limitan al paso activo.
+- Al relanzar, un digest del plugin o un SHA del objetivo distinto bloquea el
+  run sin modificar su estado. `complete` retorna `0` sin iniciar el host y
+  `blocked` retorna `10`. `prepared` y `accepted` interrumpidos se bloquean
+  como inciertos sin reenviar. `settled` permite terminar el paso desde su
+  traza, validando identidad, intento y SHA, sin invocar al host para ese turno.
+- `reconcile(run_dir, step_id, decision, approver)` exige una aprobación
+  explícita con `approver`. Sobre un paso bloqueado incierto, `retry` suma un
+  intento y deja el paso `ready`. `abandon` deja el run `cancelled`. La
+  reconciliación del motor no envía prompts.
+- El host falso vive en `tests/`. Pi RPC y la copia de skills fijadas son de
+  la Fase 3. Las rondas de grilling y el snapshot del checkout son de la
+  Fase 4. Los comandos `run`, `status` y `reconcile` son de la Fase 5.
+
 ## 6. Fases
 
 Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de código a escribir/leer (≈ 10–15 k tokens por cada 100 líneas de código+tests, más lectura de referencias).
