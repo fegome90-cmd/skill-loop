@@ -37,11 +37,11 @@ jobs:
             exit 0
           fi
           mkdir -p ../policy/scripts
-          git cat-file blob 4f3b04122fbaf49887ba18a3e641d0243fed1616 > ../policy/.gitleaks.toml
+          git cat-file blob 3ef61770ac87796a6a64c344a25393104f79d948 > ../policy/.gitleaks.toml
           git cat-file blob b750d5bbee2b4e87d7d18ccbdbf2b7091a64d9d1 > ../policy/scripts/check-secrets.sh
           git cat-file blob ef7923109092941f9e5038ac8baaa7b13b566391 > ../policy/scripts/check-sensitive-paths.py
           (cd ../policy && sha256sum -c - <<'SUMS'
-          5e30ca26527f466119072c1657e3bd716deab5ba86a8694ce3a3f78569ff79e2  .gitleaks.toml
+          72eaa83df8d98b10d4b1c35d3843812fc57483174304bb523ee143eb57447c0b  .gitleaks.toml
           68cb2e0bb6a53714312e65040d7424e45509a37914144d14cfcff09c294582d9  scripts/check-secrets.sh
           dd020fcc37909bb45408b6f1f00c54bf989017d4742b910287841ac4b81cf10f  scripts/check-sensitive-paths.py
           SUMS
@@ -60,6 +60,34 @@ jobs:
           mkdir -p security-bin
           tar -xzf gitleaks.tar.gz -C security-bin gitleaks
           echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+
+      - name: Regression-test the Gitleaks policy
+        working-directory: incoming
+        run: |
+          test_dir=$(mktemp -d)
+          trap 'rm -rf "$test_dir"' EXIT
+          config=../policy/.gitleaks.toml
+
+          mkdir -p "$test_dir/allowed" "$test_dir/blocked"
+          printf 'const apiKey = process.env.API_KEY;\n' > "$test_dir/allowed/a.js"
+          printf 'api_key = os.environ.get("API_KEY")\n' > "$test_dir/allowed/b.py"
+          printf 'apiKey: "${API_KEY}"\n' > "$test_dir/allowed/c.js"
+
+          if ! gitleaks dir "$test_dir/allowed" --config "$config" --redact=100 --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
+            echo "Gitleaks policy regression: an allowed reference was blocked." >&2
+            exit 1
+          fi
+
+          printf 'api_key = "abc%s"\n' 'def1234567890' > "$test_dir/blocked/literal.py"
+          printf 'api_key = %s + "suffix123456"\n' 'process.env.API_KEY' > "$test_dir/blocked/compound.py"
+          printf 'apiKey: "%s"\n' 'process.env.API_KEY' > "$test_dir/blocked/quoted.js"
+
+          if gitleaks dir "$test_dir/blocked" --config "$config" --redact=100 --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null --exit-code 42 >/dev/null 2>&1; then
+            echo "Gitleaks policy regression: a blocked value was not detected." >&2
+            exit 1
+          fi
 
       - name: Scan committed files and history
         working-directory: incoming

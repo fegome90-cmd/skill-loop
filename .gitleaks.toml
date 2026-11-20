@@ -13,7 +13,7 @@ keywords = ["api"]
 [[rules.allowlists]]
 description = "Environment and settings references"
 regexTarget = "match"
-regexes = ['''^["']?[\w.-]+["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?\(["']?|os\.environ\[["']?|os\.getenv\(["']?|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:$|[^\w])''']
+regexes = ['''^["']?[\w.-]+["']?[ \t]*[=:][ \t]*(?:process\.env\.|os\.environ(?:\.get)?\(["']?|os\.environ\[["']?|os\.getenv\(["']?|\$[A-Z_]|\$\{)[A-Za-z_]\w*(?:$|[;,)}\]"'])''']
 
 [[rules]]
 id = "skill-loop-macos-home-path"
