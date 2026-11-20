@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+import skillrun
 from fake_host import (
     DISCOVERY,
+    GOAL,
     RUN_ID,
     FakeConsole,
     FakeHost,
@@ -37,6 +39,35 @@ def test_run_paths_are_private_under_a_permissive_umask(tmp_path: Path) -> None:
     for path in (run.directory, *run.directory.rglob("*")):
         assert not path.is_symlink()
         assert S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600), path
+
+
+@pytest.mark.parametrize("source", ["injected", "xdg"])
+def test_run_accepts_an_alias_above_the_state_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    real_parent = tmp_path / "physical"
+    real_parent.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+    fixture = RunFiles(tmp_path)
+    if source == "xdg":
+        monkeypatch.setenv("XDG_STATE_HOME", str(alias))
+    state_dir = "skillrun" if source == "xdg" else "state"
+    host = FakeHost(DISCOVERY)
+
+    result = skillrun.run_plugin(
+        skillrun.load_plugin(fixture.plugin_path),
+        goal=GOAL,
+        run_id=RUN_ID,
+        host=host,
+        console=FakeConsole(),
+        state_root=None if source == "xdg" else alias / state_dir,
+    )
+
+    assert result.exit_code == 0
+    assert len(host.sent) == 1
+    state_path = real_parent / state_dir / RUN_ID / "state.json"
+    assert read_json(state_path)["status"] == "complete"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Checks macOS inherited ACLs")
@@ -116,17 +147,22 @@ def test_corrupt_state_blocks_before_accessing_phase_fields(tmp_path: Path, cont
     assert run.state_path.read_text(encoding="utf-8") == contents
 
 
-@pytest.mark.parametrize("entry", ["run", "lock", "state"])
+@pytest.mark.parametrize("entry", ["root", "run", "lock", "state"])
 def test_run_rejects_symlinked_state_entries(tmp_path: Path, entry: str) -> None:
     run = RunFiles(tmp_path)
     assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
-    original = {"run": run.directory, "lock": run.directory / "lock", "state": run.state_path}
+    original = {
+        "root": run.root,
+        "run": run.directory,
+        "lock": run.directory / "lock",
+        "state": run.state_path,
+    }
     path = original[entry]
     target = tmp_path / "outside"
     is_directory = path.is_dir()
     path.rename(target)
     path.symlink_to(target, target_is_directory=is_directory)
-    guarded_file = target / "state.json" if is_directory else target
+    guarded_file = target / run.state_path.relative_to(path) if is_directory else target
     before = guarded_file.read_bytes()
     host = FakeHost()
 

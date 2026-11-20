@@ -643,7 +643,15 @@ def _locked_run(run_dir: Path, *, create: bool) -> Iterator[_RunStore]:
     with ExitStack() as opened:
         with _storage_errors():
             absolute = run_dir.absolute()
-            root, *parents = absolute.parent.parts
+            state_root = absolute.parent
+            if not state_root.name:
+                raise _StateError("Invalid state root")
+            # Resolve aliases above managed storage without following the state root itself.
+            try:
+                storage_parent = state_root.parent.resolve()
+            except RuntimeError as exc:
+                raise _StateError("Unable to resolve the state root parent") from exc
+            root, *parents = (storage_parent / state_root.name).parts
             parent_fd = _open_directory(None, root, create=False)
             opened.callback(os.close, parent_fd)
             for part in parents:

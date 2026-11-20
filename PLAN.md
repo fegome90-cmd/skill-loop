@@ -159,6 +159,8 @@ class Host(Protocol):
 - `state_root` usa `$XDG_STATE_HOME/skillrun` o `~/.local/state/skillrun` salvo
   que se inyecte otra raíz. Cada run vive en `<state_root>/<run_id>/`, con
   directorios `0700`, archivos `0600` y `flock` exclusivo no bloqueante.
+  Se resuelven alias por encima de `state_root`. La raíz y las rutas internas
+  del run se abren sin seguir symlinks.
   `state.json` se valida antes de usar sus campos. Se guarda con un temporal
   exclusivo `O_EXCL|O_NOFOLLOW`, `fsync`, reemplazo atómico y `fsync` del
   directorio. La revisión sube en cada escritura.
