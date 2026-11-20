@@ -1,0 +1,8 @@
+source: https://github.com/fegome90-cmd/constitucion-ai
+version: v1.1
+commit: 13df6421f8b42bdd602aa45bdf3e024ed7ccadf8
+git_date: "2026-11-18T14:10:24-03:00"
+path: constitution/AGENTIC-CONSTITUTION.md
+snapshot: docs/constitution/AGENTIC-CONSTITUTION.md
+sha256: ff201d735c94cb5007651d8f3dcbd8403b1fe0a257dff63fa142c40ff3a65834
+captured_at: "2026-11-20"

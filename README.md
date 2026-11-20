@@ -4,7 +4,9 @@ Ejecución determinista de N skills en orden, con `grilling` (Matt Pocock) como
 discovery obligatorio. Una CLI en Python estándar lanza y controla al agente
 (Pi RPC primero) y lo obliga a invocar las skills de un plugin una a una.
 
-**Estado: v0.1.0 — Fase 1 en curso** (esquema de plugin y `skillrun validate`).
+**Estado: v0.1.0 — Fase 1 cerrada**: esquema de plugin y `skillrun validate`
+(`uv run skillrun validate <plugin.json>`; exit 0 válido · 10 inválido ·
+70 interno · 2 uso; stdout solo JSON).
 Plan, decisiones y fases en [`PLAN.md`](PLAN.md); estado real en el último
 handoff de `handoffs/`.
 
@@ -13,7 +15,7 @@ Repositorio: `skill-loop`. Producto, CLI y módulo: `skillrun`.
 ## Qué existe
 
 - Proyecto Python `>=3.12` gestionado con `uv`; runtime solo stdlib.
-- Módulo único `src/skillrun.py` (scaffold) y console script `skillrun`.
+- Módulo único `src/skillrun.py` y console script `skillrun` (subcomando `validate`).
 - Plugin de ejemplo `plugins/github-gateway/plugin.json` (pins pendientes:
   `validate` lo rechaza hasta la Fase 6).
 - 37 skills de Matt Pocock vendorizadas en `.agents/skills/`, fijadas por git
@@ -99,8 +101,7 @@ Ver [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
 `Secrets and private paths`.
 
 - Plantilla de PR: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
-- Verificación local: usá los comandos de [Calidad](#calidad) cuando el proyecto
-  Python esté incorporado en `main`.
+- Verificación local: usá los comandos de [Calidad](#calidad).
 - Seguridad: `./scripts/check-secrets.sh staged` (requiere
   [Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1))
   o activá el hook con `git config core.hooksPath .githooks`. El hook corre el

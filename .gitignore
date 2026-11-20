@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+dist/
+build/
+*.egg-info/
+
+# reference/: solo REVIEWS.md se versiona (prototipos de terceros, solo lectura)
+reference/*
+!reference/REVIEWS.md

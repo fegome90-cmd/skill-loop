@@ -1,0 +1,33 @@
+{
+  "schema": "skillrun/v1",
+  "id": "github-gateway",
+  "description": "Discovery con grilling y luego conocimiento GitHub (solo lectura)",
+  "skills": {
+    "grilling": {
+      "path": "skills/grilling/SKILL.md",
+      "git_blob": "d2f09a18e6a6c65c55f1271ba08dfeaf06f0bed3"
+    },
+    "github-project": {
+      "path": "skills/github-project/SKILL.md",
+      "sha256": "PENDIENTE_64_HEX"
+    }
+  },
+  "steps": [
+    {
+      "id": "discovery",
+      "skill": "grilling",
+      "kind": "grilling",
+      "result": {"summary": "string", "decisions": "array", "open_questions": "array"}
+    },
+    {
+      "id": "github-knowledge",
+      "skill": "github-project",
+      "kind": "skill",
+      "instruction": "Usa las decisiones confirmadas para diagnosticar el repositorio. Solo lectura; no ejecutes scripts de terceros.",
+      "result": {"diagnosis": "string", "evidence": "array"}
+    }
+  ],
+  "on_done": {
+    "directive": "Presenta el diagnóstico. No modifiques GitHub."
+  }
+}

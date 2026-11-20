@@ -1,0 +1,43 @@
+{
+  "schema": "skillrun/v1",
+  "id": "complete",
+  "description": "Prepare a discovery résumé for Montréal.",
+  "skills": {
+    "grilling": {
+      "path": "skills/grilling/SKILL.md",
+      "git_blob": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "research": {
+      "path": "skills/research/SKILL.md",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "summary": {
+      "path": "skills/summary/SKILL.md",
+      "git_blob": "89abcdef0123456789abcdef0123456789abcdef"
+    }
+  },
+  "steps": [
+    {
+      "id": "discovery",
+      "skill": "grilling",
+      "kind": "grilling",
+      "instruction": "Confirm the scope before continuing.",
+      "result": {"summary": "string", "decisions": "array"}
+    },
+    {
+      "id": "investigate",
+      "skill": "research",
+      "kind": "skill",
+      "instruction": "Collect evidence within the agreed scope.",
+      "result": {"evidence": "object", "count": "integer"}
+    },
+    {
+      "id": "summarize",
+      "skill": "summary",
+      "kind": "skill",
+      "instruction": "Summarize the findings.",
+      "result": {"verified": "boolean"}
+    }
+  ],
+  "on_done": {"directive": "Present the findings."}
+}
