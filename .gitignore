@@ -1,5 +1,4 @@
 .venv/
-docs/agent/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,3 +8,7 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# reference/: solo REVIEWS.md se versiona (prototipos de terceros, solo lectura)
+reference/*
+!reference/REVIEWS.md
