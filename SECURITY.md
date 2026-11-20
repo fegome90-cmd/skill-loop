@@ -40,8 +40,10 @@ GitHub secret scanning y push protection están activos. El workflow
 
 - escaneo del historial con Gitleaks;
 - política de nombres sensibles (`.env`, claves, credenciales, `.kube`,
-  `.docker`);
-- un hook local opcional.
+  `.docker`).
+
+Además, `.githooks/pre-commit` ofrece un hook local opcional que corre el
+escaneo en staged.
 
 No cubre binarios, archivos comprimidos ni mensajes de commit; esos casos
 requieren revisión humana.

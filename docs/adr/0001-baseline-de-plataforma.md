@@ -18,7 +18,9 @@ Se adopta un baseline de plataforma compuesto por:
 
 - un ruleset `pr-gate` sobre la rama por defecto, con la regla `pull_request`:
   pull request obligatorio, 0 aprobaciones, resolución de threads obligatoria y
-  los tres métodos de merge habilitados;
+  los tres métodos de merge habilitados. GitHub agrega
+  `require_extra_approval_for_unattributed_changes: true`; con 0 aprobaciones no
+  tiene efecto;
 - la protección clásica de `main` conserva el pull request obligatorio, el
   bloqueo de force-push y borrado, y se actualiza para exigir el check
   `Secrets and private paths` con `strict` y aplicar `enforce_admins`;
@@ -83,16 +85,19 @@ La protección clásica previa a este cambio:
 - Los threads de revisión, incluidos los de bots, bloquean el merge hasta
   resolverse.
 - El primer pull request usa una política de seguridad fijada por blob y
-  SHA-256; los pull requests posteriores usan la política de la rama base.
+  SHA-256; los pull requests posteriores usan la política de la rama base. El
+  paso queda inerte cuando la base ya contiene la política y se puede eliminar
+  en un PR de limpieza.
 - **Riesgo residual:** el workflow `security.yml` corre desde el head del PR, así
   que un pull request podría reemplazar el job por un no-op conservando el nombre
   `Secrets and private paths`. La política de archivos está protegida, pero el
   workflow que la invoca no. Mitigación aceptada: revisión explícita del diff de
   `.github/workflows/**` y `scripts/check-*`. Una alternativa futura es mover el
   check a un workflow reutilizable en un repositorio protegido.
-- GitHub secret scanning y push protection están activos. El scan propio agrega
-  historial, nombres sensibles y hook local; se mantiene por esos casos, no por
-  duplicar proveedores.
+- GitHub secret scanning y push protection están activos. El scan propio usa las
+  reglas default de Gitleaks y agrega historial, nombres sensibles y hook local;
+  se mantiene por el historial y las rutas, que el scanning nativo no recorre,
+  no solo por duplicar proveedores.
 - El reporte privado de vulnerabilidades está habilitado en la configuración del
   repositorio y verificado por API.
 - La licencia MIT del árbol del proyecto cubre el contenido propio; las skills

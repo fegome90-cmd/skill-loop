@@ -9,11 +9,11 @@
 Marcá lo que corriste y anotá el resultado, no solo el tilde. Si un comando no
 existe en la base de este PR, indicá qué verificación hiciste en su lugar.
 
-- [ ] `uv sync`
-- [ ] `make lint`
-- [ ] `uv run pytest`
-- [ ] Si toca el validador: `uv run skillrun validate tests/fixtures/plugins/complete.json`
 - [ ] `./scripts/check-secrets.sh staged` (si Gitleaks 8.30.1 está disponible)
+- [ ] Si el PR ya incluye el proyecto Python: `uv sync`
+- [ ] Si el PR ya incluye el proyecto Python: `make lint`
+- [ ] Si el PR ya incluye el proyecto Python: `uv run pytest`
+- [ ] Si el PR ya incluye el proyecto Python y toca el validador: `uv run skillrun validate tests/fixtures/plugins/complete.json`
 - [ ] Si toca `.github/workflows/**` o `scripts/check-*`: revisión explícita del cambio de seguridad
 
 ## Procedencia

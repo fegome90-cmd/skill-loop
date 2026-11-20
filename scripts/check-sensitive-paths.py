@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 ENV_TEMPLATES = {".env.example", ".env.sample", ".env.template"}
@@ -42,11 +43,11 @@ CREDENTIAL_JSON = re.compile(
 )
 
 
-def git(*args):
+def git(*args: str) -> bytes:
     return subprocess.check_output(["git", *args], stderr=subprocess.DEVNULL)
 
 
-def blocked_path(path):
+def blocked_path(path: str | bytes) -> bool:
     *directories, name = os.fsdecode(path).lower().split("/")
     return (
         not PRIVATE_DIRECTORIES.isdisjoint(directories)
@@ -57,7 +58,7 @@ def blocked_path(path):
     )
 
 
-def staged_entries():
+def staged_entries() -> Iterator[tuple[bytes, bytes, bytes]]:
     for entry in git("ls-files", "--stage", "-z").split(b"\0"):
         if entry:
             metadata, path = entry.split(b"\t", 1)
@@ -67,12 +68,12 @@ def staged_entries():
             yield mode, object_id, path
 
 
-def history_paths():
+def history_paths() -> Iterator[bytes]:
     for revision in git("rev-list", "HEAD").decode("ascii").splitlines():
         yield from git("ls-tree", "-rz", "--name-only", revision).split(b"\0")
 
 
-def reject_blocked(paths):
+def reject_blocked(paths: Iterable[bytes]) -> int:
     blocked = {path for path in paths if path and blocked_path(path)}
     if blocked:
         print(f"Security check found {len(blocked)} disallowed Git filename(s).", file=sys.stderr)
@@ -80,7 +81,7 @@ def reject_blocked(paths):
     return 0
 
 
-def snapshot_index(destination):
+def snapshot_index(destination: Path) -> int:
     entries = list(staged_entries())
     if reject_blocked(path for _, _, path in entries):
         return 1
@@ -102,7 +103,7 @@ def snapshot_index(destination):
     return 0
 
 
-def main(args):
+def main(args: list[str]) -> int:
     try:
         if len(args) == 2 and args[0] == "staged":
             return snapshot_index(Path(args[1]))

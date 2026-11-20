@@ -29,20 +29,21 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
 
-      - name: Load the pinned policy for the initial pull request
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.base.sha == 'e36309cca9cc634e9c4a9e16e821888a22fc5ac5'
+      - name: Load the pinned policy when the base lacks it
+        if: github.event_name == 'pull_request'
         working-directory: incoming
         run: |
+          if [ -f ../policy/scripts/check-secrets.sh ]; then
+            exit 0
+          fi
           mkdir -p ../policy/scripts
           git cat-file blob 4f3b04122fbaf49887ba18a3e641d0243fed1616 > ../policy/.gitleaks.toml
           git cat-file blob b750d5bbee2b4e87d7d18ccbdbf2b7091a64d9d1 > ../policy/scripts/check-secrets.sh
-          git cat-file blob ac75ab4f94c46fa1108274af09daa784ef9fcdc6 > ../policy/scripts/check-sensitive-paths.py
+          git cat-file blob ef7923109092941f9e5038ac8baaa7b13b566391 > ../policy/scripts/check-sensitive-paths.py
           (cd ../policy && sha256sum -c - <<'SUMS'
           5e30ca26527f466119072c1657e3bd716deab5ba86a8694ce3a3f78569ff79e2  .gitleaks.toml
           68cb2e0bb6a53714312e65040d7424e45509a37914144d14cfcff09c294582d9  scripts/check-secrets.sh
-          b25152300a5fedb531681ac45acda06bfb0e256e4798b715c3e6d688643af4f3  scripts/check-sensitive-paths.py
+          dd020fcc37909bb45408b6f1f00c54bf989017d4742b910287841ac4b81cf10f  scripts/check-sensitive-paths.py
           SUMS
           )
           chmod +x ../policy/scripts/check-secrets.sh
