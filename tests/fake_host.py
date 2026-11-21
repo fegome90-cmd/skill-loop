@@ -8,11 +8,16 @@ from typing import TYPE_CHECKING, Any
 import skillrun
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
 RUN_ID = "test-run"
 GOAL = "Agree on the scope"
 CONFIRMATION_ID = "operator-confirmation-001"
+OPENING = "Which behavior should we preserve?"
+SYNTHESIS_PREFIX = (
+    "The user ended the grilling rounds. Return your shared-understanding synthesis in a "
+    "fenced JSON block with exactly these fields and types:\n"
+)
 DISCOVERY_RESULT = '{"summary":"Agreed scope"}'
 DISCOVERY = f"```json\n{DISCOVERY_RESULT}\n```"
 MULTI_STEP_DISCOVERY = '```json\n{"summary":"Agreed scope","decisions":[]}\n```'
@@ -77,26 +82,56 @@ class FakeConsole:
     def __init__(
         self,
         *,
-        confirmed: bool = True,
+        answers: Iterable[str | BaseException] = (":listo",),
+        decisions: Iterable[tuple[bool, str]] = ((True, CONFIRMATION_ID),),
+        on_ask: Callable[[], None] | None = None,
         on_confirm: Callable[[], None] | None = None,
         events: list[str] | None = None,
     ) -> None:
-        self.confirmed = confirmed
+        self.answers = iter(answers)
+        self.decisions = iter(decisions)
+        self.on_ask = on_ask
         self.on_confirm = on_confirm
         self.events = [] if events is None else events
+        self.shown: list[tuple[str, str]] = []
+        self.notices: list[tuple[str, str]] = []
+        self.asked: list[str] = []
         self.confirmations: list[tuple[str, dict[str, object]]] = []
+
+    def show(self, step_id: str, text: str) -> None:
+        self.events.append("show")
+        self.shown.append((step_id, text))
+
+    def notice(self, step_id: str, text: str) -> None:
+        self.events.append("notice")
+        self.notices.append((step_id, text))
+
+    def ask(self, step_id: str) -> str:
+        self.events.append("ask")
+        self.asked.append(step_id)
+        if self.on_ask is not None:
+            self.on_ask()
+        answer = next(self.answers)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     def confirm(self, step_id: str, result: Mapping[str, object]) -> tuple[bool, str]:
         self.events.append("confirm")
         self.confirmations.append((step_id, dict(result)))
         if self.on_confirm is not None:
             self.on_confirm()
-        return self.confirmed, CONFIRMATION_ID
+        return next(self.decisions)
 
 
 class RunFiles:
-    def __init__(self, tmp_path: Path, fixture: str = "minimal") -> None:
+    def __init__(
+        self, tmp_path: Path, fixture: str = "minimal", *, workspace: Path | None = None
+    ) -> None:
         work = tmp_path / "plugin"
+        self.workspace = workspace if workspace is not None else tmp_path / "checkout"
+        if workspace is None:
+            self.workspace.mkdir()
         data = read_json(FIXTURES / f"{fixture}.json")
         for skill in data["skills"].values():
             source = FIXTURES.parent / "engine" / skill["path"]
@@ -118,7 +153,7 @@ class RunFiles:
     def invoke(
         self,
         host: skillrun.Host,
-        console: FakeConsole | None = None,
+        console: skillrun.Console | None = None,
         *,
         goal: str = GOAL,
         plugin_path: Path | None = None,
@@ -129,11 +164,12 @@ class RunFiles:
             run_id=RUN_ID,
             host=host,
             console=console if console is not None else FakeConsole(),
+            workspace=self.workspace,
             state_root=self.root,
         )
 
-    def trace_path(self, step_id: str = "discovery", attempt: int = 1) -> Path:
-        return self.directory / "traces" / f"{step_id}-{attempt}.json"
+    def trace_path(self, step_id: str = "discovery", attempt: int = 1, turn: int = 1) -> Path:
+        return self.directory / "traces" / f"{step_id}-{attempt}-{turn}.json"
 
     def state(self) -> dict[str, Any]:
         return read_json(self.state_path)

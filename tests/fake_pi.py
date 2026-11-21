@@ -381,7 +381,8 @@ def main() -> int:
                 return 0
         elif kind in handlers:
             handlers[kind](command)
-            if kind == "get_entries" and session.turns and options.scenario == "late-invalid-json":
+            after_fault_turn = kind == "get_entries" and session.turns >= options.fault_turn
+            if after_fault_turn and options.scenario == "late-invalid-json":
                 # Wait until the supervisor has verified history and entered confirmation.
                 release = options.log.with_suffix(".emit-invalid")
                 deadline = time.monotonic() + 5
@@ -390,11 +391,7 @@ def main() -> int:
                         raise RuntimeError("Supervisor did not reach confirmation")
                     time.sleep(0.01)
                 emit_bytes(BAD_WIRE["invalid-json"])
-            if (
-                kind == "get_entries"
-                and session.turns
-                and options.scenario == "invalid-json-on-stdin-eof"
-            ):
+            if after_fault_turn and options.scenario == "invalid-json-on-stdin-eof":
                 session.emit({"type": "before_stdin_eof"})
         else:
             session.respond(command, error="Unsupported fake Pi command")

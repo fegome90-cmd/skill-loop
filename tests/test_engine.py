@@ -16,8 +16,10 @@ from fake_host import (
     GOAL,
     INVESTIGATION,
     MULTI_STEP_DISCOVERY,
+    OPENING,
     RUN_ID,
     SUMMARY,
+    SYNTHESIS_PREFIX,
     FakeConsole,
     FakeHost,
     ProcessCrash,
@@ -35,6 +37,7 @@ def test_full_run_keeps_one_host_and_uses_the_last_json_block(
     run = RunFiles(tmp_path, "complete")
     events: list[str] = []
     revisions: list[int] = []
+    traces: list[dict[str, object]] = []
     clock = 100.0
     monkeypatch.setattr(time, "monotonic", lambda: clock)
 
@@ -44,7 +47,7 @@ def test_full_run_keeps_one_host_and_uses_the_last_json_block(
         clock += 86_400
 
     def observe(checkpoint: str, prompt: str) -> None:
-        if checkpoint == "sent":
+        if checkpoint == "sent" or (checkpoint == "ready" and prompt.startswith(SYNTHESIS_PREFIX)):
             return
         state = run.state()
         assert state["status"] == checkpoint
@@ -57,34 +60,71 @@ def test_full_run_keeps_one_host_and_uses_the_last_json_block(
                 assert CONFIRMATION_ID not in persisted
 
     response = f'```json\n{{"draft":true}}\n```\nFinal scope.\n{MULTI_STEP_DISCOVERY}'
-    host = FakeHost(response, INVESTIGATION, SUMMARY, observe=observe, events=events)
+    investigation = f'```json\n{{"draft":true}}\n```\n{INVESTIGATION}'
+    host = FakeHost(OPENING, response, investigation, SUMMARY, observe=observe, events=events)
     console = FakeConsole(on_confirm=wait_for_operator, events=events)
+    trace_paths = iter(
+        (
+            run.trace_path(),
+            run.trace_path(turn=2),
+            run.trace_path("investigate"),
+            run.trace_path("summarize"),
+        )
+    )
+    real_fsync = os.fsync
+
+    def record_settled_trace(fd: int) -> None:
+        real_fsync(fd)
+        synced = os.fstat(fd)
+        if (
+            S_ISDIR(synced.st_mode)
+            and run.state_path.exists()
+            and os.path.samestat(synced, run.directory.stat())
+            and run.state()["status"] == "settled"
+        ):
+            traces.append(read_json(next(trace_paths)))
+
+    monkeypatch.setattr(os, "fsync", record_settled_trace)
 
     outcome = run.invoke(host, console)
 
     assert (outcome.status, outcome.exit_code) == ("complete", 0)
     assert console.confirmations == [("discovery", {"summary": "Agreed scope", "decisions": []})]
-    assert events == ["start", "verify_skills", "prompt", "confirm", "prompt", "prompt", "close"]
-    assert host.skill_names == host.verified_names == {"grilling", "research", "summary"}
-    assert [prompt.split()[0] for prompt in host.sent] == [
-        "/skill:grilling",
-        "/skill:research",
-        "/skill:summary",
+    assert events == [
+        "start",
+        "verify_skills",
+        "prompt",
+        "show",
+        "ask",
+        "prompt",
+        "show",
+        "confirm",
+        "prompt",
+        "prompt",
+        "close",
     ]
-    assert GOAL in host.sent[0]
-    assert "Collect evidence within the agreed scope." in host.sent[1]
+    assert host.skill_names == host.verified_names == {"grilling", "research", "summary"}
+    assert host.sent[:2] == [
+        f"/skill:grilling {GOAL}",
+        SYNTHESIS_PREFIX + '{"decisions": "array", "summary": "string"}',
+    ]
+    assert [prompt.split()[0] for prompt in host.sent[2:]] == ["/skill:research", "/skill:summary"]
+    assert "Collect evidence within the agreed scope." in host.sent[2]
     state = run.state()
     assert state["status"] == "complete"
     revisions.append(state["revision"])
     assert revisions == sorted(set(revisions))
 
-    for step, text in zip(
-        ("discovery", "investigate", "summarize"), (response, INVESTIGATION, SUMMARY), strict=True
+    for trace, step, turn, text in zip(
+        traces,
+        ("discovery", "discovery", "investigate", "summarize"),
+        (1, 2, 1, 1),
+        (OPENING, response, investigation, SUMMARY),
+        strict=True,
     ):
-        trace = read_json(run.trace_path(step))
         assert trace["run_id"] == RUN_ID
         assert trace["step_id"] == step
-        assert trace["receipt_id"] == f"{RUN_ID}/{step}/1"
+        assert trace["receipt_id"] == f"{RUN_ID}/{step}/1/{turn}"
         assert trace["text"] == text
         assert trace["sha256"] == sha256(text.encode()).hexdigest()
 
@@ -100,18 +140,21 @@ def test_crash_at_the_send_boundary_only_replays_a_ready_step(
         if stage == ("sent" if checkpoint == "prepared" else checkpoint):
             raise ProcessCrash
 
-    interrupted = FakeHost(DISCOVERY, observe=crash_at_checkpoint)
+    interrupted = FakeHost(OPENING, observe=crash_at_checkpoint)
     with pytest.raises(ProcessCrash):
         run.invoke(interrupted)
     assert len(interrupted.sent) == (0 if checkpoint == "ready" else 1)
     assert run.state()["status"] == checkpoint
 
-    resumed = FakeHost(DISCOVERY)
-    outcome = run.invoke(resumed)
+    resumed = FakeHost(OPENING, DISCOVERY)
+
+    def check_replayed_opening() -> None:
+        assert read_json(run.trace_path())["receipt_id"] == f"{RUN_ID}/discovery/1/1"
+
+    outcome = run.invoke(resumed, FakeConsole(on_ask=check_replayed_opening))
     if checkpoint == "ready":
         assert outcome.exit_code == 0
-        assert len(resumed.sent) == 1
-        assert read_json(run.trace_path())["receipt_id"] == f"{RUN_ID}/discovery/1"
+        assert len(resumed.sent) == 2
     else:
         assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
         assert run.state()["status"] == "blocked"
@@ -133,20 +176,21 @@ def test_crash_after_a_durable_checkpoint_does_not_repeat_completed_turns(
             and run.state_path.exists()
             and os.path.samestat(synced, run.directory.stat())
             and run.state()["status"] == checkpoint
+            and (checkpoint != "settled" or run.state()["turn_kind"] == "synthesis")
         ):
             raise ProcessCrash
 
-    interrupted = FakeHost(MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY)
+    interrupted = FakeHost(OPENING, MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY)
     console = FakeConsole()
     with monkeypatch.context() as patch, pytest.raises(ProcessCrash):
         patch.setattr(os, "fsync", crash_after_sync)
         run.invoke(interrupted, console)
     checkpoint_state = run.state_path.read_bytes()
     assert run.state()["status"] == checkpoint
-    assert len(interrupted.sent) == (3 if checkpoint == "complete" else 1)
+    assert len(interrupted.sent) == (4 if checkpoint == "complete" else 2)
     assert len(console.confirmations) == (0 if checkpoint == "settled" else 1)
     if checkpoint == "done":
-        assert CONFIRMATION_ID.encode() in checkpoint_state
+        assert f'"confirmation_event_id": "{CONFIRMATION_ID}"' in json.dumps(run.state())
 
     resumed = FakeHost(INVESTIGATION, SUMMARY)
     resumed_console = FakeConsole()
@@ -172,32 +216,40 @@ def test_crash_after_a_durable_checkpoint_does_not_repeat_completed_turns(
         pytest.param('```json\n{"summary":"OK","extra":true}\n```', id="extra-key"),
     ],
 )
-def test_invalid_result_blocks_before_confirmation(tmp_path: Path, response: str) -> None:
+def test_invalid_synthesis_notifies_and_returns_to_rounds(tmp_path: Path, response: str) -> None:
     run = RunFiles(tmp_path)
-    console = FakeConsole()
-    outcome = run.invoke(FakeHost(response), console)
+    console = FakeConsole(answers=(":listo", EOFError()))
+    host = FakeHost(OPENING, response)
+    outcome = run.invoke(host, console)
 
-    assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
+    assert (outcome.status, outcome.exit_code, outcome.step_id) == ("cancelled", 130, "discovery")
     assert console.confirmations == []
-    assert run.state()["status"] == "blocked"
+    assert console.shown == [("discovery", OPENING), ("discovery", response)]
+    assert console.asked == ["discovery", "discovery"]
+    [(step, notice)] = console.notices
+    assert step == "discovery" and notice
+    assert len(host.sent) == 2
+    assert run.state()["status"] == "awaiting"
 
 
-def test_declined_confirmation_stops_grilling_and_cannot_be_retried_as_uncertain(
-    tmp_path: Path,
-) -> None:
+def test_declined_confirmation_returns_to_rounds_without_reconciliation(tmp_path: Path) -> None:
     run = RunFiles(tmp_path, "complete")
-    host = FakeHost(MULTI_STEP_DISCOVERY)
-    console = FakeConsole(confirmed=False)
-    assert run.invoke(host, console).exit_code == 10
-    assert len(console.confirmations) == len(host.sent) == 1
-    assert run.state()["status"] == "blocked"
-    blocked = run.state_path.read_bytes()
+    host = FakeHost(OPENING, MULTI_STEP_DISCOVERY)
+    console = FakeConsole(answers=(":listo", EOFError()), decisions=((False, "declined"),))
+    assert run.invoke(host, console).exit_code == 130
+    assert len(console.confirmations) == 1
+    assert len(host.sent) == 2
+    assert run.state()["status"] == "awaiting"
+    awaiting = run.state_path.read_bytes()
 
     assert skillrun.reconcile(run.directory, "discovery", "retry", "tester").exit_code == 10
-    resumed = FakeHost()
-    assert run.invoke(resumed).exit_code == 10
-    assert resumed.events == []
-    assert run.state_path.read_bytes() == blocked
+    assert run.state_path.read_bytes() == awaiting
+    resumed = FakeHost(MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY)
+    resumed_console = FakeConsole()
+    assert run.invoke(resumed, resumed_console).exit_code == 0
+    assert resumed_console.shown[0] == ("discovery", MULTI_STEP_DISCOVERY)
+    assert resumed.sent[0].startswith(SYNTHESIS_PREFIX)
+    assert len(resumed.sent) == 3
 
 
 def test_host_close_failure_persists_a_blocked_run(tmp_path: Path) -> None:
@@ -206,7 +258,7 @@ def test_host_close_failure_persists_a_blocked_run(tmp_path: Path) -> None:
             raise skillrun.HostError("Host did not shut down")
 
     run = RunFiles(tmp_path)
-    first = run.invoke(HostWithBrokenClose(DISCOVERY))
+    first = run.invoke(HostWithBrokenClose(OPENING, DISCOVERY))
     assert (first.status, first.exit_code) == ("blocked", 10)
     assert run.state()["status"] == "blocked"
 
@@ -221,7 +273,7 @@ def test_interrupt_during_host_close_blocks_replay(tmp_path: Path) -> None:
             raise KeyboardInterrupt
 
     run = RunFiles(tmp_path)
-    assert run.invoke(InterruptedClose(DISCOVERY)).exit_code == 130
+    assert run.invoke(InterruptedClose(OPENING, DISCOVERY)).exit_code == 130
     assert run.state()["status"] == "blocked"
 
     host = FakeHost()
@@ -258,20 +310,26 @@ def test_uncertain_timeout_requires_an_explicit_reconciliation(
         assert idle_host.events == []
         return
 
-    assert run.state()["status"] == "ready"
+    assert (run.state()["status"], run.state()["turn_kind"], run.state()["turn"]) == (
+        "ready",
+        "open",
+        1,
+    )
     stale_path = run.trace_path(attempt=2)
     stale_path.parent.mkdir(mode=0o700, exist_ok=True)
     stale_path.touch(mode=0o600)
     stale_path.write_text('{"text":"left over from an old execution"}', encoding="utf-8")
 
     def check_stale_trace_removed(stage: str, _prompt: str) -> None:
-        if stage == "prepared":
+        if stage == "prepared" and not resumed.sent:
             assert not stale_path.exists()
 
-    resumed = FakeHost(DISCOVERY, observe=check_stale_trace_removed)
-    assert run.invoke(resumed).exit_code == 0
-    assert len(resumed.sent) == 1
-    assert read_json(stale_path)["receipt_id"] == f"{RUN_ID}/discovery/2"
+    def check_replaced_trace() -> None:
+        assert read_json(stale_path)["receipt_id"] == f"{RUN_ID}/discovery/2/1"
+
+    resumed = FakeHost(OPENING, DISCOVERY, observe=check_stale_trace_removed)
+    assert run.invoke(resumed, FakeConsole(on_ask=check_replaced_trace)).exit_code == 0
+    assert len(resumed.sent) == 2
 
 
 @pytest.mark.parametrize(

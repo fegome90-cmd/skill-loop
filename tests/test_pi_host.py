@@ -20,9 +20,12 @@ import pytest
 import skillrun
 from fake_host import (
     DISCOVERY,
+    GOAL,
     INVESTIGATION,
     MULTI_STEP_DISCOVERY,
+    OPENING,
     SUMMARY,
+    SYNTHESIS_PREFIX,
     FakeConsole,
     RunFiles,
     read_json,
@@ -511,33 +514,48 @@ def test_close_reaps_child_even_when_exit_is_unsuccessful(
 
 
 def test_run_plugin_finishes_multiple_skills_with_one_pi_session(
-    tmp_path: Path, pi_process: PiProcess
+    tmp_path: Path, pi_process: PiProcess, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    run = RunFiles(tmp_path, "complete")
-    console = FakeConsole()
-    host = pi_process.host("tool", replies=(MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY))
+    run = RunFiles(tmp_path, "complete", workspace=pi_process.cwd)
+    answer = "  Keep the original scope.\t "
+    round_reply = "What evidence should be collected?"
+    grilling_prompts = [
+        f"/skill:grilling {GOAL}",
+        answer,
+        SYNTHESIS_PREFIX + '{"decisions": "array", "summary": "string"}',
+    ]
+
+    def check_before_confirmation() -> None:
+        assert [command["message"] for command in pi_process.commands("prompt")] == grilling_prompts
+
+    console = FakeConsole(answers=(answer, ":listo"), on_confirm=check_before_confirmation)
+    host = pi_process.host(
+        "tool", replies=(OPENING, round_reply, MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY)
+    )
 
     outcome = run.invoke(host, console)
 
     assert (outcome.status, outcome.exit_code) == ("complete", 0)
     assert run.state()["status"] == "complete"
-    assert len(console.confirmations) == 1
+    assert console.confirmations == [("discovery", {"summary": "Agreed scope", "decisions": []})]
+    assert console.shown == [
+        ("discovery", text) for text in (OPENING, round_reply, MULTI_STEP_DISCOVERY)
+    ]
+    assert capsys.readouterr().out == ""
     (spawn,) = pi_process.spawns()
     argv = spawn["argv"]
     assert [argv[index + 1] for index, flag in enumerate(argv) if flag == "--skill"] == [
         str(run.directory.resolve() / "skills" / name / "SKILL.md")
         for name in ("grilling", "research", "summary")
     ]
-    assert [command["message"].split()[0] for command in pi_process.commands("prompt")] == [
-        "/skill:grilling",
-        "/skill:research",
-        "/skill:summary",
-    ]
+    prompts = [command["message"] for command in pi_process.commands("prompt")]
+    assert prompts[:3] == grilling_prompts
+    assert [prompt.split()[0] for prompt in prompts[3:]] == ["/skill:research", "/skill:summary"]
     assert_reaped(pi_process)
 
 
 def test_run_plugin_pin_mismatch_never_spawns_pi(tmp_path: Path, pi_process: PiProcess) -> None:
-    run = RunFiles(tmp_path)
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
     skill = read_json(run.plugin_path)["skills"]["grilling"]
     (run.plugin_path.parent / skill["path"]).write_bytes(b"Changed pinned bytes")
     outcome = run.invoke(pi_process.host())
@@ -550,7 +568,7 @@ def test_run_plugin_pin_mismatch_never_spawns_pi(tmp_path: Path, pi_process: PiP
 def test_run_plugin_detects_source_change_after_copy_before_spawning_pi(
     tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = RunFiles(tmp_path)
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
     skill = read_json(run.plugin_path)["skills"]["grilling"]
     source = run.plugin_path.parent / skill["path"]
     copy = run.directory / "skills" / "grilling" / "SKILL.md"
@@ -579,8 +597,8 @@ def test_run_plugin_detects_source_change_after_copy_before_spawning_pi(
 def test_run_plugin_blocks_invalid_rpc_after_verified_history(
     tmp_path: Path, pi_process: PiProcess
 ) -> None:
-    run = RunFiles(tmp_path)
-    host = pi_process.host("late-invalid-json", replies=(DISCOVERY,))
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    host = pi_process.host("late-invalid-json", fault_turn=2, replies=(OPENING, DISCOVERY))
 
     def wait_for_protocol_failure() -> None:
         (spawn,) = pi_process.spawns()
@@ -598,15 +616,15 @@ def test_run_plugin_blocks_invalid_rpc_after_verified_history(
 
     assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
     assert run.state()["status"] == "blocked"
-    assert len(pi_process.commands("prompt")) == 1
+    assert len(pi_process.commands("prompt")) == 2
     assert_reaped(pi_process)
 
 
 def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
     tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = RunFiles(tmp_path)
-    host = pi_process.host("invalid-json-on-stdin-eof", replies=(DISCOVERY,))
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    host = pi_process.host("invalid-json-on-stdin-eof", fault_turn=2, replies=(OPENING, DISCOVERY))
     assert isinstance(host, skillrun.PiHost)
     reader_parked = Event()
     reader_can_resume = Event()
@@ -646,7 +664,7 @@ def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
 def test_run_plugin_blocks_uncertain_turn_without_relaunching_or_resending(
     tmp_path: Path, pi_process: PiProcess, scenario: str
 ) -> None:
-    run = RunFiles(tmp_path)
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
     first = run.invoke(pi_process.host(scenario))
     assert (first.status, first.exit_code, first.step_id) == ("blocked", 10, "discovery")
     assert run.state()["status"] == "blocked"
@@ -685,8 +703,10 @@ def test_close_is_bounded_when_a_descendant_keeps_streaming_stdout(
 def test_run_plugin_blocks_a_truncated_record_at_stdin_eof(
     tmp_path: Path, pi_process: PiProcess
 ) -> None:
-    run = RunFiles(tmp_path)
-    outcome = run.invoke(pi_process.host("truncated-record-on-stdin-eof", replies=(DISCOVERY,)))
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    outcome = run.invoke(
+        pi_process.host("truncated-record-on-stdin-eof", replies=(OPENING, DISCOVERY))
+    )
 
     events = [record["event"] for record in read_records(pi_process.log)]
     assert events[-2:] == ["eof", "truncated-record-written"]

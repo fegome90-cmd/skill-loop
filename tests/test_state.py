@@ -16,6 +16,7 @@ import skillrun
 from fake_host import (
     DISCOVERY,
     GOAL,
+    OPENING,
     RUN_ID,
     FakeConsole,
     FakeHost,
@@ -32,7 +33,7 @@ def test_run_paths_are_private_under_a_permissive_umask(tmp_path: Path) -> None:
     run = RunFiles(tmp_path)
     previous_umask = os.umask(0)
     try:
-        assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
+        assert run.invoke(FakeHost(OPENING, DISCOVERY)).exit_code == 0
     finally:
         os.umask(previous_umask)
 
@@ -53,7 +54,7 @@ def test_run_accepts_an_alias_above_the_state_root(
     if source == "xdg":
         monkeypatch.setenv("XDG_STATE_HOME", str(alias))
     state_dir = "skillrun" if source == "xdg" else "state"
-    host = FakeHost(DISCOVERY)
+    host = FakeHost(OPENING, DISCOVERY)
 
     result = skillrun.run_plugin(
         skillrun.load_plugin(fixture.plugin_path),
@@ -61,11 +62,12 @@ def test_run_accepts_an_alias_above_the_state_root(
         run_id=RUN_ID,
         host=host,
         console=FakeConsole(),
+        workspace=fixture.workspace,
         state_root=None if source == "xdg" else alias / state_dir,
     )
 
     assert result.exit_code == 0
-    assert len(host.sent) == 1
+    assert len(host.sent) == 2
     state_path = real_parent / state_dir / RUN_ID / "state.json"
     assert read_json(state_path)["status"] == "complete"
 
@@ -90,7 +92,7 @@ def test_inherited_acl_blocks_before_creating_evidence(tmp_path: Path) -> None:
 
 def test_run_returns_not_ready_without_changes_when_lock_is_held(tmp_path: Path) -> None:
     run = RunFiles(tmp_path)
-    assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
+    assert run.invoke(FakeHost(OPENING), FakeConsole(answers=(EOFError(),))).exit_code == 130
     state_before = run.state_path.read_bytes()
     trace_before = run.trace_path().read_bytes()
     host = FakeHost()
@@ -107,7 +109,7 @@ def test_run_returns_not_ready_without_changes_when_lock_is_held(tmp_path: Path)
 @pytest.mark.parametrize("changed", ["goal", "plugin"])
 def test_replay_preserves_a_run_bound_to_different_input(tmp_path: Path, changed: str) -> None:
     run = RunFiles(tmp_path)
-    assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
+    assert run.invoke(FakeHost(OPENING, DISCOVERY)).exit_code == 0
     before = run.state_path.read_bytes()
     host = FakeHost()
 
@@ -138,7 +140,7 @@ def test_replay_preserves_a_run_bound_to_different_input(tmp_path: Path, changed
 )
 def test_corrupt_state_blocks_before_accessing_phase_fields(tmp_path: Path, contents: str) -> None:
     run = RunFiles(tmp_path)
-    assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
+    assert run.invoke(FakeHost(OPENING, DISCOVERY)).exit_code == 0
     run.state_path.write_text(contents, encoding="utf-8")
     host = FakeHost()
 
@@ -150,7 +152,7 @@ def test_corrupt_state_blocks_before_accessing_phase_fields(tmp_path: Path, cont
 @pytest.mark.parametrize("entry", ["root", "run", "lock", "state"])
 def test_run_rejects_symlinked_state_entries(tmp_path: Path, entry: str) -> None:
     run = RunFiles(tmp_path)
-    assert run.invoke(FakeHost(DISCOVERY)).exit_code == 0
+    assert run.invoke(FakeHost(OPENING, DISCOVERY)).exit_code == 0
     original = {
         "root": run.root,
         "run": run.directory,
@@ -178,6 +180,7 @@ def test_run_rejects_symlinked_state_entries(tmp_path: Path, entry: str) -> None
         "cross-run",
         "cross-step",
         "cross-attempt",
+        "cross-turn",
         "wrong-hash",
         "stale-rehashed",
         "missing",
@@ -192,9 +195,9 @@ def test_settled_recovery_rejects_unbound_evidence(tmp_path: Path, defect: str) 
         raise ProcessCrash
 
     with pytest.raises(ProcessCrash):
-        run.invoke(FakeHost(DISCOVERY), FakeConsole(on_confirm=crash_before_confirmation))
+        run.invoke(FakeHost(OPENING, DISCOVERY), FakeConsole(on_confirm=crash_before_confirmation))
 
-    path = run.trace_path()
+    path = run.trace_path(turn=2)
     trace = read_json(path)
     if defect == "missing":
         path.unlink()
@@ -207,7 +210,8 @@ def test_settled_recovery_rejects_unbound_evidence(tmp_path: Path, defect: str) 
             {
                 "cross-run": {"run_id": "other-run"},
                 "cross-step": {"step_id": "other-step"},
-                "cross-attempt": {"receipt_id": f"{RUN_ID}/discovery/2"},
+                "cross-attempt": {"receipt_id": f"{RUN_ID}/discovery/2/2"},
+                "cross-turn": {"receipt_id": f"{RUN_ID}/discovery/1/1"},
                 "wrong-hash": {"sha256": "0" * 64},
                 "stale-rehashed": {},
             }[defect]
@@ -235,7 +239,7 @@ def test_unsafe_trace_directory_persists_blocked_on_a_settled_run(
         raise ProcessCrash
 
     with pytest.raises(ProcessCrash):
-        run.invoke(FakeHost(DISCOVERY), FakeConsole(on_confirm=crash_before_confirmation))
+        run.invoke(FakeHost(OPENING, DISCOVERY), FakeConsole(on_confirm=crash_before_confirmation))
 
     traces = run.trace_path().parent
     original = tmp_path / "saved-traces"

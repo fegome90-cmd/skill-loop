@@ -13,6 +13,7 @@ from fake_host import (
     DISCOVERY,
     INVESTIGATION,
     MULTI_STEP_DISCOVERY,
+    OPENING,
     SUMMARY,
     FakeHost,
     ProcessCrash,
@@ -75,7 +76,7 @@ def test_run_passes_verified_private_copies_in_declaration_order(
             super().verify_skills(expected)
 
     monkeypatch.setattr(skillrun, "read_skill_bytes", observe_read)
-    outcome = run.invoke(ObserveCopies(MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY))
+    outcome = run.invoke(ObserveCopies(OPENING, MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY))
     assert (outcome.status, outcome.exit_code) == ("complete", 0)
     assert reads == [source for source in sources.values() for _ in range(2)]
     assert observed_skills == list(staged.items())

@@ -21,7 +21,7 @@ from pathlib import Path, PureWindowsPath
 from threading import Condition, Event, Lock, Thread
 from time import monotonic
 from types import MappingProxyType
-from typing import IO, Protocol, TypeGuard
+from typing import IO, Protocol, TextIO, TypeGuard
 from uuid import uuid4
 
 __version__ = "0.1.0"
@@ -88,6 +88,10 @@ class HostError(Exception):
     """An expected failure to start, verify, or operate the host."""
 
 
+class WorkspaceSnapshotError(Exception):
+    """The workspace could not be snapshotted or changed during a turn."""
+
+
 @dataclass(frozen=True)
 class Turn:
     text: str
@@ -115,7 +119,49 @@ class PiHistory:
 
 
 class Console(Protocol):
+    def show(self, step_id: str, text: str) -> None: ...
+    def notice(self, step_id: str, text: str) -> None: ...
+    def ask(self, step_id: str) -> str: ...
     def confirm(self, step_id: str, result: Mapping[str, object]) -> tuple[bool, str]: ...
+
+
+class TerminalConsole:
+    def __init__(
+        self, *, stdin: TextIO, stderr: TextIO, new_id: Callable[[], str] = lambda: uuid4().hex
+    ) -> None:
+        self._stdin = stdin
+        self._stderr = stderr
+        self._new_id = new_id
+
+    def show(self, step_id: str, text: str) -> None:
+        print(text, file=self._stderr, flush=True)
+
+    def notice(self, step_id: str, text: str) -> None:
+        self.show(step_id, f"skillrun: {text}")
+
+    def _readline(self, prompt: str) -> str:
+        print(prompt, end="", file=self._stderr, flush=True)
+        line = self._stdin.readline()
+        if not line:
+            raise EOFError
+        return line[:-2] if line.endswith("\r\n") else line.removesuffix("\n")
+
+    def ask(self, step_id: str) -> str:
+        return self._readline("> ")
+
+    def confirm(self, step_id: str, result: Mapping[str, object]) -> tuple[bool, str]:
+        self.show(step_id, json.dumps(dict(result), indent=2, sort_keys=True, ensure_ascii=False))
+        while True:
+            answer = self._readline("¿Confirmas? [s/n] ").strip().lower()
+            if answer in {"s", "n"}:
+                return answer == "s", "console:" + self._new_id()
+
+    def reconciliation_decision(self) -> tuple[str, str]:
+        choices = {"reintentar": "retry", "abandonar": "abandon"}
+        while True:
+            answer = self._readline("Decisión [reintentar / abandonar]: ").strip().lower()
+            if answer in choices:
+                return choices[answer], "console:" + self._new_id()
 
 
 @dataclass(frozen=True)
@@ -124,6 +170,7 @@ class RunOutcome:
     exit_code: int
     step_id: str | None = None
     reason: str | None = None
+    result: Mapping[str, object] | None = None
 
 
 def _has_text(value: object) -> TypeGuard[str]:
@@ -317,15 +364,43 @@ def check_result(contract: Mapping[str, str], value: object) -> list[str]:
 
 
 _STATE_SCHEMA = "skillrun/state/v1"
-_TURN_FIELDS = ("cursor", "prompt_sha256", "leaf_id", "response_sha256", "confirmation_event_id")
+_TURN_FIELDS = (
+    "cursor",
+    "prompt_sha256",
+    "workspace_sha256",
+    "answer_sha256",
+    "leaf_id",
+    "response_sha256",
+    "confirmation_event_id",
+)
 
 
 class _StateError(Exception):
     """The run or its persisted evidence is missing, unsafe, or invalid."""
 
 
+class _ConsoleClosedError(Exception):
+    """The human console reached end of input."""
+
+
+@contextmanager
+def _human_input() -> Iterator[None]:
+    try:
+        yield
+    except EOFError as exc:
+        raise _ConsoleClosedError from exc
+
+
 class _RunBusy(Exception):  # noqa: N818 - the engine handles contention as a separate outcome.
     """Another supervisor owns the run lock."""
+
+
+@dataclass(frozen=True)
+class _SettledTurn:
+    attempt: int
+    turn: int
+    leaf_id: str
+    response_sha256: str
 
 
 @dataclass(frozen=True)
@@ -337,16 +412,25 @@ class _RunState:
     status: str = "ready"
     revision: int = 0
     attempt: int = 1
+    turn: int = 1
+    turn_kind: str = "open"
     cursor: str | None = None
     prompt_sha256: str | None = None
+    workspace_sha256: str | None = None
+    answer_sha256: str | None = None
     leaf_id: str | None = None
     response_sha256: str | None = None
     confirmation_event_id: str | None = None
     reason: str | None = None
+    previous: _SettledTurn | None = None
 
-    @property
-    def receipt_id(self) -> str:
-        return f"{self.run_id}/{self.step_id}/{self.attempt}"
+    def receipt_id(self, attempt: int, turn: int) -> str:
+        return f"{self.run_id}/{self.step_id}/{attempt}/{turn}"
+
+    def settled_turn(self) -> _SettledTurn:
+        if self.leaf_id is None or self.response_sha256 is None:
+            raise _StateError("Missing settled evidence")
+        return _SettledTurn(self.attempt, self.turn, self.leaf_id, self.response_sha256)
 
 
 def _run_directory(state_root: Path | None, run_id: str) -> Path:
@@ -367,6 +451,86 @@ def _is_sha256(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
+def _workspace_entries(
+    directory_fd: int, prefix: bytes = b""
+) -> Iterator[tuple[bytes, bytes, int, bytes]]:
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            path = prefix + os.fsencode(entry.name)
+            info = entry.stat(follow_symlinks=False)
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                target = os.readlink(entry.name, dir_fd=directory_fd)
+                yield path, b"l", mode, os.fsencode(target)
+                continue
+            directory = stat.S_ISDIR(info.st_mode)
+            if not directory and not stat.S_ISREG(info.st_mode):
+                raise WorkspaceSnapshotError("Workspace snapshot failed")
+            flags = os.O_RDONLY | _file_flags()
+            if directory:
+                flags |= os.O_DIRECTORY
+            fd = os.open(entry.name, flags, dir_fd=directory_fd)
+            try:
+                current = os.fstat(fd)
+                if current.st_mode != info.st_mode or not os.path.samestat(info, current):
+                    raise WorkspaceSnapshotError("Workspace snapshot failed")
+                if directory:
+                    yield path, b"d", mode, b""
+                    yield from _workspace_entries(fd, path + b"/")
+                else:
+                    with os.fdopen(fd, "rb", closefd=False) as stream:
+                        yield path, b"f", mode, hashlib.file_digest(stream, "sha256").digest()
+            finally:
+                os.close(fd)
+
+
+def workspace_digest(root: Path) -> str:
+    """Hash the workspace paths, modes and contents without traversing symlinks."""
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            entries = sorted(_workspace_entries(fd))
+        finally:
+            os.close(fd)
+    except (OSError, RecursionError) as exc:
+        raise WorkspaceSnapshotError("Workspace snapshot failed") from exc
+    digest = hashlib.sha256()
+    for path, kind, mode, payload in entries:
+        for field in (path, kind, mode.to_bytes(2, "big"), payload):
+            digest.update(len(field).to_bytes(8, "big"))
+            digest.update(field)
+    return digest.hexdigest()
+
+
+def _decode_previous(value: object) -> _SettledTurn | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.keys() != {
+        "attempt",
+        "turn",
+        "leaf_id",
+        "response_sha256",
+    }:
+        raise _StateError("Invalid previous turn")
+    attempt, turn, leaf_id, digest = (
+        value["attempt"],
+        value["turn"],
+        value["leaf_id"],
+        value["response_sha256"],
+    )
+    if (
+        type(attempt) is not int
+        or attempt < 1
+        or type(turn) is not int
+        or turn < 1
+        or not _has_text(leaf_id)
+        or not _is_sha256(digest)
+    ):
+        raise _StateError("Invalid previous turn")
+    leaf_id.encode("utf-8")
+    return _SettledTurn(attempt, turn, leaf_id, digest)
+
+
 def _decode_state(data: dict[str, object], run_id: str) -> _RunState:
     required = {
         "schema",
@@ -377,6 +541,11 @@ def _decode_state(data: dict[str, object], run_id: str) -> _RunState:
         "status",
         "revision",
         "attempt",
+        "turn",
+        "turn_kind",
+        "answer_sha256",
+        "workspace_sha256",
+        "previous",
     }
     if not required <= data.keys() or data.keys() - (required | {*_TURN_FIELDS, "reason"}):
         raise _StateError("Invalid state fields")
@@ -391,9 +560,18 @@ def _decode_state(data: dict[str, object], run_id: str) -> _RunState:
         raise _StateError("Invalid state step id")
     if not _is_sha256(plugin_digest) or not _is_sha256(goal_sha256):
         raise _StateError("Invalid plugin or goal digest")
-    revision, attempt = data["revision"], data["attempt"]
+    revision, attempt, turn = data["revision"], data["attempt"], data["turn"]
     if type(revision) is not int or revision < 1 or type(attempt) is not int or attempt < 1:
         raise _StateError("Invalid state revision or attempt")
+    turn_kind = data["turn_kind"]
+    if (
+        type(turn) is not int
+        or turn < 1
+        or not isinstance(turn_kind, str)
+        or turn_kind not in {"skill", "open", "round", "synthesis"}
+        or (turn == 1) != (turn_kind in {"skill", "open"})
+    ):
+        raise _StateError("Invalid turn identity")
 
     status = data["status"]
     if not isinstance(status, str) or status not in {
@@ -401,6 +579,7 @@ def _decode_state(data: dict[str, object], run_id: str) -> _RunState:
         "prepared",
         "accepted",
         "settled",
+        "awaiting",
         "done",
         "blocked",
         "complete",
@@ -418,30 +597,76 @@ def _decode_state(data: dict[str, object], run_id: str) -> _RunState:
 
     if any(
         not _is_sha256(details[field])
-        for field in ("prompt_sha256", "response_sha256")
+        for field in ("prompt_sha256", "response_sha256", "answer_sha256", "workspace_sha256")
         if field in details
     ):
         raise _StateError("Invalid prompt or response digest")
     terminal = status in {"blocked", "cancelled"}
     if terminal != ("reason" in details):
         raise _StateError("Invalid state reason")
-    turn = details.keys() - {"reason"}
-    if status in {"ready", "complete"} and turn:
+    evidence = details.keys() - {"reason"}
+    if (status == "ready" and (evidence or turn != 1)) or (
+        status == "complete" and not evidence and turn != 1
+    ):
         raise _StateError("Unexpected turn evidence")
     if (
-        turn or status in {"prepared", "accepted", "settled", "done"}
-    ) and "prompt_sha256" not in turn:
+        evidence or status in {"prepared", "accepted", "settled", "done"}
+    ) and "prompt_sha256" not in evidence:
         raise _StateError("Missing prompt digest")
+    if ("workspace_sha256" in evidence) != ("prompt_sha256" in evidence):
+        raise _StateError("Invalid workspace digest")
+    if ("answer_sha256" in evidence) != (turn_kind == "round" and "prompt_sha256" in evidence):
+        raise _StateError("Invalid answer digest")
+    if "answer_sha256" in evidence and details["answer_sha256"] != details["prompt_sha256"]:
+        raise _StateError("Answer digest does not match the prompt")
     settled = {"leaf_id", "response_sha256"}
-    final_evidence = turn & settled
+    final_evidence = evidence & settled
     if final_evidence and (final_evidence != settled or status in {"prepared", "accepted"}):
         raise _StateError("Unexpected or incomplete settled evidence")
-    if status in {"settled", "done"} and not final_evidence:
+    if status == "cancelled" and final_evidence:
+        raise _StateError("Unexpected settled evidence")
+    if (
+        status in {"settled", "done"} or (status == "complete" and evidence)
+    ) and not final_evidence:
         raise _StateError("Missing settled evidence")
-    if "confirmation_event_id" in turn and (not final_evidence or status == "settled"):
+    if "confirmation_event_id" in evidence and (
+        not final_evidence
+        or turn_kind != "synthesis"
+        or status not in {"done", "complete", "blocked"}
+    ):
         raise _StateError("Unexpected confirmation evidence")
+    previous = _decode_previous(data["previous"])
+    if previous is None:
+        if turn > 1 or status == "awaiting":
+            raise _StateError("Missing previous turn")
+    elif turn_kind == "skill" or not (
+        (
+            previous.attempt == attempt
+            and previous.turn == turn
+            and status in {"awaiting", "blocked"}
+            and final_evidence
+            and previous.leaf_id == details["leaf_id"]
+            and previous.response_sha256 == details["response_sha256"]
+        )
+        or (
+            previous.attempt <= attempt
+            and previous.turn == turn - 1
+            and (status != "awaiting" or (previous.attempt < attempt and not evidence))
+        )
+    ):
+        raise _StateError("Invalid previous turn identity")
     return _RunState(
-        run_id, plugin_digest, goal_sha256, step_id, status, revision, attempt, **details
+        run_id,
+        plugin_digest,
+        goal_sha256,
+        step_id,
+        status,
+        revision,
+        attempt,
+        turn,
+        turn_kind,
+        previous=previous,
+        **details,
     )
 
 
@@ -632,22 +857,28 @@ class _RunStore:
             if type(state.revision) is not int or state.revision != revision:
                 raise _StateError("Stale state revision")
             saved = replace(state, revision=revision + 1)
-            data = {key: value for key, value in asdict(saved).items() if value is not None}
+            data = {
+                key: value
+                for key, value in asdict(saved).items()
+                if value is not None or key in {"answer_sha256", "workspace_sha256", "previous"}
+            }
             data["schema"] = _STATE_SCHEMA
             _decode_state(data, self._run_id)
             _write_run_json(self._fd, "state.json", data)
             return saved
 
-    def _trace_name(self, state: _RunState) -> str:
+    def _trace_name(self, state: _RunState, attempt: int, turn: int) -> str:
         if (
             state.run_id != self._run_id
             or not isinstance(state.step_id, str)
             or not re.fullmatch(_ID_PATTERN, state.step_id)
-            or type(state.attempt) is not int
-            or state.attempt < 1
+            or type(attempt) is not int
+            or attempt < 1
+            or type(turn) is not int
+            or turn < 1
         ):
             raise _StateError("Invalid trace identity")
-        return f"{state.step_id}-{state.attempt}.json"
+        return f"{state.step_id}-{attempt}-{turn}.json"
 
     @contextmanager
     def _traces(self, *, create: bool) -> Iterator[int]:
@@ -658,9 +889,12 @@ class _RunStore:
         finally:
             os.close(fd)
 
-    def clear_trace(self, state: _RunState) -> None:
+    def clear_trace(self, state: _RunState, target: _SettledTurn | None = None) -> None:
+        attempt, turn = (
+            (state.attempt, state.turn) if target is None else (target.attempt, target.turn)
+        )
         with _storage_errors():
-            name = self._trace_name(state)
+            name = self._trace_name(state, attempt, turn)
             if _check_entry(self._fd, "traces", directory=True):
                 with self._traces(create=False) as fd:
                     if _check_entry(fd, name):
@@ -669,7 +903,7 @@ class _RunStore:
 
     def write_trace(self, state: _RunState, text: str) -> str:
         with _storage_errors():
-            name = self._trace_name(state)
+            name = self._trace_name(state, state.attempt, state.turn)
             digest = _sha256_text(text)
             with self._traces(create=True) as fd:
                 _write_run_json(
@@ -678,25 +912,25 @@ class _RunStore:
                     {
                         "run_id": state.run_id,
                         "step_id": state.step_id,
-                        "receipt_id": state.receipt_id,
+                        "receipt_id": state.receipt_id(state.attempt, state.turn),
                         "text": text,
                         "sha256": digest,
                     },
                 )
         return digest
 
-    def read_trace(self, state: _RunState) -> str:
+    def read_trace(self, state: _RunState, target: _SettledTurn) -> str:
         with _storage_errors(), self._traces(create=False) as fd:
-            data = _read_run_json(fd, self._trace_name(state))
+            data = _read_run_json(fd, self._trace_name(state, target.attempt, target.turn))
             if data is None or data.keys() != {"run_id", "step_id", "receipt_id", "text", "sha256"}:
                 raise _StateError("Missing or invalid trace")
             text, digest = data["text"], data["sha256"]
             if (
                 data["run_id"] != state.run_id
                 or data["step_id"] != state.step_id
-                or data["receipt_id"] != state.receipt_id
+                or data["receipt_id"] != state.receipt_id(target.attempt, target.turn)
                 or not isinstance(text, str)
-                or digest != state.response_sha256
+                or digest != target.response_sha256
                 or digest != _sha256_text(text)
             ):
                 raise _StateError("Trace does not match the run receipt")
@@ -1273,6 +1507,35 @@ def _prompt_text(step: Step, goal: str) -> str:
     )
 
 
+def _grilling_input(state: _RunState, step: Step, console: Console) -> tuple[_RunState, str]:
+    if state.previous is None:
+        raise _StateError("Missing previous turn")
+    with _human_input():
+        answer = console.ask(step.id)
+        while not answer.strip():
+            answer = console.ask(step.id)
+    synthesis = answer.strip() == ":listo"
+    next_turn = replace(
+        state,
+        status="ready",
+        turn=state.previous.turn + 1,
+        turn_kind="synthesis" if synthesis else "round",
+        cursor=None,
+        prompt_sha256=None,
+        workspace_sha256=None,
+        leaf_id=None,
+        response_sha256=None,
+        answer_sha256=None,
+    )
+    if synthesis:
+        contract = json.dumps(dict(step.result), sort_keys=True)
+        answer = (
+            "The user ended the grilling rounds. Return your shared-understanding synthesis "
+            f"in a fenced JSON block with exactly these fields and types:\n{contract}"
+        )
+    return next_turn, answer
+
+
 @contextmanager
 def _started_host(host: Host, paths: Mapping[str, Path], pins: Mapping[str, str]) -> Iterator[None]:
     try:
@@ -1288,8 +1551,11 @@ def _started_host(host: Host, paths: Mapping[str, Path], pins: Mapping[str, str]
         host.close()
 
 
-def _send_turn(store: _RunStore, state: _RunState, host: Host, text: str) -> _RunState:
+def _send_turn(
+    store: _RunStore, state: _RunState, host: Host, text: str, workspace: Path
+) -> _RunState:
     prompt_sha256 = _sha256_text(text)
+    workspace_sha256 = workspace_digest(workspace)
     active = True
     invalid_callback = False
 
@@ -1303,7 +1569,14 @@ def _send_turn(store: _RunStore, state: _RunState, host: Host, text: str) -> _Ru
         nonlocal state
         require_phase("ready", valid=cursor is None or _has_text(cursor))
         state = store.save(
-            replace(state, status="prepared", cursor=cursor, prompt_sha256=prompt_sha256)
+            replace(
+                state,
+                status="prepared",
+                cursor=cursor,
+                prompt_sha256=prompt_sha256,
+                workspace_sha256=workspace_sha256,
+                answer_sha256=prompt_sha256 if state.turn_kind == "round" else None,
+            )
         )
 
     def on_accepted() -> None:
@@ -1324,6 +1597,8 @@ def _send_turn(store: _RunStore, state: _RunState, host: Host, text: str) -> _Ru
         turn.leaf_id.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise _InvalidTurnError from exc
+    if workspace_digest(workspace) != workspace_sha256:
+        raise WorkspaceSnapshotError("Workspace changed during agent turn")
     response_sha256 = store.write_trace(state, turn.text)
     return store.save(
         replace(state, status="settled", leaf_id=turn.leaf_id, response_sha256=response_sha256)
@@ -1335,7 +1610,7 @@ def _block_step(store: _RunStore, state: _RunState, reason: str) -> RunOutcome:
     return RunOutcome(blocked.status, EXIT_BLOCKED, blocked.step_id, blocked.reason)
 
 
-def _fresh_step(state: _RunState, step_id: str, *, attempt: int = 1) -> _RunState:
+def _fresh_step(state: _RunState, step_id: str, turn_kind: str, *, attempt: int = 1) -> _RunState:
     return _RunState(
         state.run_id,
         state.plugin_digest,
@@ -1343,6 +1618,7 @@ def _fresh_step(state: _RunState, step_id: str, *, attempt: int = 1) -> _RunStat
         step_id,
         revision=state.revision,
         attempt=attempt,
+        turn_kind=turn_kind,
     )
 
 
@@ -1361,10 +1637,17 @@ def _active_index(plugin: Plugin, state: _RunState) -> int:
             continue
         if state.status == "complete" and index != len(plugin.steps) - 1:
             break
-        confirmed = state.confirmation_event_id is not None
-        if state.status == "done" and confirmed != (step.kind == "grilling"):
+        if (state.turn_kind == "skill") != (step.kind == "skill"):
             break
-        if confirmed and (step.kind != "grilling" or state.status not in {"done", "blocked"}):
+        confirmed = state.confirmation_event_id is not None
+        finished = state.status == "done" or (
+            state.status == "complete" and state.response_sha256 is not None
+        )
+        if finished and confirmed != (step.kind == "grilling"):
+            break
+        if confirmed and (
+            step.kind != "grilling" or state.status not in {"done", "complete", "blocked"}
+        ):
             break
         if state.reason == _UNCERTAIN and not _is_uncertain(state):
             break
@@ -1372,12 +1655,36 @@ def _active_index(plugin: Plugin, state: _RunState) -> int:
     raise _StateError("State does not match an active plugin step")
 
 
-def _record_interruption(store: _RunStore) -> None:
+def _in_flight_reason(state: _RunState, workspace: Path) -> str:
+    """Keep an interrupted turn reconcilable only if the workspace did not change."""
+    try:
+        changed = workspace_digest(workspace) != state.workspace_sha256
+    except WorkspaceSnapshotError:
+        return "Workspace snapshot failed"
+    return "Workspace changed during agent turn" if changed else _UNCERTAIN
+
+
+def _record_interruption(store: _RunStore, workspace: Path) -> None:
     # A write may already have installed a newer receipt when it raised.
     with suppress(_StateError):
         state = store.load()
         if state is not None and state.status in _IN_FLIGHT:
-            _block_step(store, state, _UNCERTAIN)
+            _block_step(store, state, _in_flight_reason(state, workspace))
+
+
+def _completed_outcome(store: _RunStore, state: _RunState, step: Step) -> RunOutcome:
+    # Older complete receipts did not retain the digest of the final trace.
+    if state.response_sha256 is None:
+        return RunOutcome("complete", EXIT_DONE)
+    try:
+        text = store.read_trace(state, state.settled_turn())
+        result = _step_result(step, text)
+        if result is not None:
+            json.dumps(dict(result), allow_nan=False)
+            return RunOutcome("complete", EXIT_DONE, step.id, result=result)
+    except (_StateError, ValueError, RecursionError):
+        pass
+    return RunOutcome("blocked", EXIT_BLOCKED, step.id, "Invalid final result evidence")
 
 
 def _advance_run(
@@ -1387,15 +1694,16 @@ def _advance_run(
     goal: str,
     host: Host,
     console: Console,
+    workspace: Path,
 ) -> RunOutcome:
     first_index = _active_index(plugin, state)
     if state.status == "complete":
-        return RunOutcome("complete", EXIT_DONE)
+        return _completed_outcome(store, state, plugin.steps[first_index])
     if state.status in {"blocked", "cancelled"}:
         code = EXIT_BLOCKED if state.status == "blocked" else EXIT_CANCELLED
         return RunOutcome(state.status, code, state.step_id, state.reason)
     if state.status in _IN_FLIGHT:
-        return _block_step(store, state, _UNCERTAIN)
+        return _block_step(store, state, _in_flight_reason(state, workspace))
 
     step = plugin.steps[first_index]
 
@@ -1407,58 +1715,104 @@ def _advance_run(
 
     try:
         with ExitStack() as session:
+
+            def finish_step(
+                state: _RunState, *, last: bool, event_id: str | None = None
+            ) -> _RunState:
+                if last:
+                    try:
+                        session.close()
+                    except (Exception, KeyboardInterrupt):
+                        _block_step(store, state, "Host shutdown failed")
+                        raise
+                return store.save(replace(state, status="done", confirmation_event_id=event_id))
+
             staged = None
             started = False
+            if state.status == "awaiting":
+                if state.previous is None:
+                    raise _StateError("Missing previous turn")
+                try:
+                    text = store.read_trace(state, state.previous)
+                except _StateError:
+                    return _block_step(store, state, "Invalid settled trace")
+                console.show(step.id, text)
             for index in range(first_index, len(plugin.steps)):
                 step = plugin.steps[index]
                 has_next_step = index + 1 < len(plugin.steps)
-                if state.status == "ready":
-                    if staged is None:
-                        staged = stage_skills()
-                    if state.revision == 0:
-                        state = store.save(state)
-                    store.clear_trace(state)
-                    if not started:
-                        session.enter_context(_started_host(host, *staged))
-                        started = True
-                    state = _send_turn(store, state, host, _prompt_text(step, goal))
-                if state.status == "settled":
+                while state.status != "done":
+                    if state.status == "awaiting":
+                        state, prompt = _grilling_input(state, step, console)
+                    elif state.status == "ready":
+                        prompt = _prompt_text(step, goal)
+                    if state.status == "ready":
+                        if staged is None:
+                            staged = stage_skills()
+                        if state.revision == 0:
+                            state = store.save(state)
+                        store.clear_trace(state)
+                        if not started:
+                            session.enter_context(_started_host(host, *staged))
+                            started = True
+                        state = _send_turn(store, state, host, prompt, workspace)
+                    target = state.settled_turn()
                     try:
-                        text = store.read_trace(state)
+                        text = store.read_trace(state, target)
                     except _StateError:
                         return _block_step(store, state, "Invalid settled trace")
-                    result = _step_result(step, text)
-                    if result is None:
-                        return _block_step(store, state, "Result does not match the step contract")
-                    # A recovered step can lead to a launch. Check its pins before advancing
-                    # the durable receipt or asking for confirmation again.
-                    if has_next_step and staged is None:
-                        staged = stage_skills()
                     event_id = None
                     if step.kind == "grilling":
-                        confirmed, event_id = console.confirm(step.id, result)
-                        if confirmed is not True or not _has_text(event_id):
-                            return _block_step(
-                                store, state, "Grilling confirmation was not recorded"
-                            )
-                    if not has_next_step:
-                        try:
-                            session.close()
-                        except (Exception, KeyboardInterrupt):
-                            _block_step(store, state, "Host shutdown failed")
-                            raise
-                    state = store.save(
-                        replace(state, status="done", confirmation_event_id=event_id)
-                    )
+                        console.show(step.id, text)
+                        if state.turn_kind == "synthesis":
+                            result = _step_result(step, text)
+                            if result is None:
+                                console.notice(
+                                    step.id, "Synthesis does not match the step contract"
+                                )
+                            else:
+                                # Check the pins before advancing a recovered step.
+                                if has_next_step and staged is None:
+                                    staged = stage_skills()
+                                with _human_input():
+                                    confirmed, event_id = console.confirm(step.id, result)
+                                if not isinstance(event_id, str) or (
+                                    confirmed is not False
+                                    and (confirmed is not True or not _has_text(event_id))
+                                ):
+                                    return _block_step(
+                                        store, state, "Grilling confirmation was not recorded"
+                                    )
+                                if confirmed:
+                                    state = finish_step(
+                                        state, last=not has_next_step, event_id=event_id
+                                    )
+                                    continue
+                        # A recovered settled turn needs only its own trace.
+                        if state.previous is not None:
+                            store.clear_trace(state, state.previous)
+                        state = store.save(replace(state, status="awaiting", previous=target))
+                        continue
+                    if _step_result(step, text) is None:
+                        return _block_step(store, state, "Result does not match the step contract")
+                    state = finish_step(state, last=not has_next_step)
                 if has_next_step:
                     if staged is None:
                         staged = stage_skills()
-                    state = store.save(_fresh_step(state, plugin.steps[index + 1].id))
-        state = store.save(
-            replace(_fresh_step(state, state.step_id, attempt=state.attempt), status="complete")
-        )
-        return RunOutcome(state.status, EXIT_DONE)
+                    store.clear_trace(state)
+                    if state.previous is not None:
+                        store.clear_trace(state, state.previous)
+                    state = store.save(_fresh_step(state, plugin.steps[index + 1].id, "skill"))
+        outcome = _completed_outcome(store, state, step)
+        if outcome.exit_code != EXIT_DONE:
+            return _block_step(store, state, "Invalid final result evidence")
+        store.save(replace(state, status="complete"))
+        return outcome
     except _SkillCopyError as exc:
+        return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
+    except WorkspaceSnapshotError as exc:
+        current = store.load()
+        if current is not None:
+            return _block_step(store, current, str(exc))
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
     except (HostError, _InvalidTurnError) as exc:
         current = store.load()
@@ -1469,16 +1823,16 @@ def _advance_run(
             if current.status == "blocked":
                 return RunOutcome(current.status, EXIT_BLOCKED, current.step_id, current.reason)
             if isinstance(exc, HostError) and current.status in _IN_FLIGHT:
-                reason = _UNCERTAIN
+                reason = _in_flight_reason(current, workspace)
             return _block_step(store, current, reason)
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, reason)
     except _StateError:
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, "Invalid run storage or evidence")
-    except KeyboardInterrupt:
-        _record_interruption(store)
+    except (KeyboardInterrupt, _ConsoleClosedError):
+        _record_interruption(store, workspace)
         return RunOutcome("cancelled", EXIT_CANCELLED, step.id, "Run interrupted")
     except Exception:
-        _record_interruption(store)
+        _record_interruption(store, workspace)
         return RunOutcome("internal", EXIT_INTERNAL, step.id, "Internal run error")
 
 
@@ -1489,10 +1843,18 @@ def run_plugin(
     run_id: str,
     host: Host,
     console: Console,
+    workspace: Path,
     state_root: Path | None = None,
 ) -> RunOutcome:
     """Run or recover a plugin while holding its exclusive run lock."""
     try:
+        workspace_is_dir = False
+        with suppress(OSError):
+            workspace_is_dir = stat.S_ISDIR(os.lstat(workspace).st_mode)
+        if not workspace_is_dir:
+            return RunOutcome(
+                "blocked", EXIT_BLOCKED, plugin.steps[0].id, "Workspace snapshot failed"
+            )
         goal_sha256 = _sha256_text(goal)
         with _locked_run(_run_directory(state_root, run_id), create=True) as store:
             state = store.load()
@@ -1500,7 +1862,7 @@ def run_plugin(
                 state = _RunState(run_id, plugin.digest, goal_sha256, plugin.steps[0].id)
             elif (state.plugin_digest, state.goal_sha256) != (plugin.digest, goal_sha256):
                 return RunOutcome("blocked", EXIT_BLOCKED, reason="Plugin or goal changed")
-            return _advance_run(store, state, plugin, goal, host, console)
+            return _advance_run(store, state, plugin, goal, host, console, workspace)
     except _RunBusy:
         return RunOutcome("not_ready", EXIT_NOT_READY, reason="Run lock is held")
     except (_StateError, UnicodeEncodeError):
@@ -1511,7 +1873,14 @@ def run_plugin(
         return RunOutcome("internal", EXIT_INTERNAL, reason="Internal run error")
 
 
-def reconcile(run_dir: Path, step_id: str, decision: str, approver: str) -> RunOutcome:
+def reconcile(
+    run_dir: Path,
+    step_id: str,
+    decision: str,
+    approver: str,
+    *,
+    expected_revision: int | None = None,
+) -> RunOutcome:
     """Record an explicit decision about an uncertain prompt without sending it."""
     if decision not in ("retry", "abandon") or not _has_text(approver):
         return RunOutcome("blocked", EXIT_BLOCKED, reason="Invalid reconciliation approval")
@@ -1520,8 +1889,18 @@ def reconcile(run_dir: Path, step_id: str, decision: str, approver: str) -> RunO
             state = store.load()
             if state is None or state.step_id != step_id or not _is_uncertain(state):
                 return RunOutcome("blocked", EXIT_BLOCKED, reason="No matching uncertain step")
+            if expected_revision is not None and state.revision != expected_revision:
+                return RunOutcome("blocked", EXIT_BLOCKED, reason="Reconciliation evidence changed")
             if decision == "retry":
-                state = store.save(_fresh_step(state, state.step_id, attempt=state.attempt + 1))
+                store.clear_trace(state)
+                retried = _fresh_step(
+                    state, state.step_id, state.turn_kind, attempt=state.attempt + 1
+                )
+                if state.previous is not None:
+                    retried = replace(
+                        retried, status="awaiting", turn=state.turn, previous=state.previous
+                    )
+                state = store.save(retried)
                 return RunOutcome(state.status, EXIT_NOT_READY, state.step_id)
             state = store.save(replace(state, status="cancelled", reason="Run abandoned"))
             return RunOutcome(state.status, EXIT_CANCELLED, state.step_id, state.reason)
@@ -1537,6 +1916,106 @@ def reconcile(run_dir: Path, step_id: str, decision: str, approver: str) -> RunO
 
 def _emit(payload: Mapping[str, object]) -> None:
     sys.stdout.write(json.dumps(payload) + "\n")
+
+
+def _emit_run(run_id: str, outcome: RunOutcome, **details: object) -> int:
+    payload = {
+        "run_id": run_id,
+        "status": outcome.status,
+        "exit_code": outcome.exit_code,
+        "step_id": outcome.step_id,
+        "reason": outcome.reason,
+        **details,
+    }
+    if outcome.result is not None:
+        payload["result"] = dict(outcome.result)
+    _emit(payload)
+    if outcome.reason is not None:
+        print(f"skillrun: {outcome.reason}", file=sys.stderr)
+    return outcome.exit_code
+
+
+def _run_cli(args: argparse.Namespace) -> int:
+    try:
+        plugin = load_plugin(args.plugin)
+    except PluginError as exc:
+        return _emit_run(
+            args.run_id,
+            RunOutcome("blocked", EXIT_BLOCKED, reason="Invalid plugin"),
+            errors=list(exc.errors),
+        )
+    workspace = Path(args.cwd).absolute()
+    with _storage_errors():
+        run_dir = _run_directory(None, args.run_id)
+        try:
+            state_root = run_dir.parent.resolve()
+        except RuntimeError as exc:
+            raise _StateError("Unable to resolve the state directory") from exc
+        workspace_info = workspace.stat()
+        for directory in (state_root, *state_root.parents):
+            # Compare filesystem identity, not spelling on case-insensitive volumes.
+            with suppress(FileNotFoundError):
+                if os.path.samestat(workspace_info, directory.stat()):
+                    raise _StateError("Run storage must be outside the workspace")
+    outcome = run_plugin(
+        plugin,
+        goal=args.goal,
+        run_id=args.run_id,
+        host=PiHost(cwd=workspace, session_dir=run_dir / "pi-session", session_id=args.run_id),
+        console=TerminalConsole(stdin=sys.stdin, stderr=sys.stderr),
+        workspace=workspace,
+        state_root=run_dir.parent,
+    )
+    if outcome.status == "complete" and outcome.result is None:
+        outcome = RunOutcome(
+            "blocked", EXIT_BLOCKED, reason="No verified final result for this run"
+        )
+    return _emit_run(args.run_id, outcome)
+
+
+def _read_run_state(run_dir: Path) -> _RunState:
+    with _locked_run(run_dir, create=False) as store:
+        state = store.load()
+        if state is None:
+            raise _StateError("Run state not found")
+        return state
+
+
+def _status_cli(args: argparse.Namespace) -> int:
+    state = _read_run_state(_run_directory(None, args.run_id))
+    code = {
+        "complete": EXIT_DONE,
+        "blocked": EXIT_BLOCKED,
+        "cancelled": EXIT_CANCELLED,
+    }.get(state.status, EXIT_NOT_READY)
+    return _emit_run(
+        args.run_id,
+        RunOutcome(state.status, code, state.step_id, state.reason),
+        revision=state.revision,
+        attempt=state.attempt,
+        turn=state.turn,
+        reconcilable=_is_uncertain(state),
+    )
+
+
+def _reconcile_cli(args: argparse.Namespace) -> int:
+    run_dir = _run_directory(None, args.run_id)
+    state = _read_run_state(run_dir)
+    if not _is_uncertain(state):
+        raise _StateError("No matching uncertain step; check run status")
+    console = TerminalConsole(stdin=sys.stdin, stderr=sys.stderr)
+    console.show(
+        state.step_id,
+        f"Run: {state.run_id} · Paso: {state.step_id} · Revisión: {state.revision}\n"
+        f"Recibo: {state.receipt_id(state.attempt, state.turn)} · Motivo: {state.reason}\n"
+        f"SHA-256 del prompt: {state.prompt_sha256}",
+    )
+    with _human_input():
+        decision, approver = console.reconciliation_decision()
+    outcome = reconcile(
+        run_dir, state.step_id, decision, approver, expected_revision=state.revision
+    )
+    return _emit_run(args.run_id, outcome)
 
 
 def _validate(path: str) -> int:
@@ -1556,6 +2035,17 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate", help="valida un plugin.json (solo esquema)")
     validate.add_argument("plugin", help="ruta al plugin.json")
+    run = commands.add_parser("run", help="ejecuta o retoma un plugin en consola")
+    run.add_argument("plugin", help="ruta al plugin.json")
+    run.add_argument("--goal", required=True, help="objetivo del run")
+    run.add_argument("--cwd", required=True, help="directorio de trabajo de Pi y del snapshot")
+    run.add_argument("--run-id", required=True, help="identificador del run")
+    status = commands.add_parser("status", help="consulta el estado persistido sin cambiarlo")
+    status.add_argument("--run-id", required=True, help="identificador del run")
+    reconcile_cmd = commands.add_parser(
+        "reconcile", help="muestra el recibo incierto y pide reintentar o abandonar"
+    )
+    reconcile_cmd.add_argument("--run-id", required=True, help="identificador del run")
     return parser
 
 
@@ -1564,6 +2054,24 @@ def main(argv: list[str] | None = None) -> int:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
+    if args.command != "validate":
+        commands = {"run": _run_cli, "status": _status_cli, "reconcile": _reconcile_cli}
+        try:
+            return commands[args.command](args)
+        except _RunBusy:
+            return _emit_run(
+                args.run_id, RunOutcome("not_ready", EXIT_NOT_READY, reason="Run lock is held")
+            )
+        except _StateError as exc:
+            return _emit_run(args.run_id, RunOutcome("blocked", EXIT_BLOCKED, reason=str(exc)))
+        except (KeyboardInterrupt, _ConsoleClosedError):
+            return _emit_run(
+                args.run_id, RunOutcome("cancelled", EXIT_CANCELLED, reason="Run interrupted")
+            )
+        except Exception:
+            return _emit_run(
+                args.run_id, RunOutcome("internal", EXIT_INTERNAL, reason="Internal CLI error")
+            )
     try:
         return _validate(args.plugin)
     except KeyboardInterrupt:
