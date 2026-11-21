@@ -260,13 +260,13 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 | 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | no medido por rol | Opus 5.5 / medio (orquestación), Codex `gpt-6.2-sol` / `high` (WORKER), `xhigh` (TESTER y revisión nativa) | hecho (2026-11-21) |
 | 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | no medido por rol | Opus 5.5 / medio (orquestación), Codex `gpt-6.2-sol` / `high` (WORKER), `xhigh` (TESTER, verificación y cierre documental) | hecho (2026-11-21) |
 | 5 | CLI (`run/status/reconcile`), skill de entrada, README | Comandos documentados y probados | 25–40 k | no medido por rol | OpenAI Codex `gpt-6.2-sol` / `xhigh` (implementación), `gpt-6.1-sol` / `medium` (verificación independiente) | hecho (2026-11-21) |
-| 6 | Prueba real con Pi + grilling original | Un run real `discovery → github-knowledge` con evidencia guardada | 20–40 k | no medido | Sonnet 5.5 / medio (Pi ejecutado por el agente a pedido del usuario) | ejecutada (2026-11-21), pendiente de confirmación |
+| 6 | Prueba real con Pi + grilling original | Un run real `discovery → github-knowledge` con evidencia guardada | 20–40 k | no medido | Sonnet 5.5 / medio (preparación y primeras pruebas); corrida aislada ejecutada por la persona usuaria | hecho (2026-11-21) |
 | 7 | (Después) Adaptador Claude Code | Por definir | — | — | — | futuro |
 | 8 | (Después) Adaptador Codex CLI | Por definir | — | — | — | futuro |
 
 Dependencias: cada fase usa lo construido en las anteriores; la 6 requiere Pi 1.4+ instalado y el `SKILL.md` de grilling fijado.
 
-Último handoff: [Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
+Último cierre confirmado: [Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
 
 ## 7. Estructura del repo
 

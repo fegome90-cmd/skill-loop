@@ -2,13 +2,13 @@
 
 ## Estado
 
-`v0.1.0 — Fase 6 ejecutada (pendiente de confirmación)`. El repositorio `skill-loop` contiene el módulo y
+`v0.1.0 — Fase 6 cerrada`. El repositorio `skill-loop` contiene el módulo y
 la CLI `skillrun`, con los subcomandos `validate`, `run`, `status` y
 `reconcile`. El contrato de uso está en el [README](README.md#cli).
 
-La Fase 6 se ejecutó con Pi 1.6.0 real: un run `discovery → github-knowledge`
-completó con evidencia. Ver el
-[handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
+La prueba con Pi real completó el flujo `discovery → github-knowledge`.
+El [handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md) distingue
+las corridas y sus límites de verificación.
 
 ## Lectura por intención
 
