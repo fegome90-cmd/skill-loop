@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha1, sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -95,14 +96,28 @@ class FakeConsole:
 
 class RunFiles:
     def __init__(self, tmp_path: Path, fixture: str = "minimal") -> None:
-        self.plugin_path = FIXTURES / f"{fixture}.json"
+        work = tmp_path / "plugin"
+        data = read_json(FIXTURES / f"{fixture}.json")
+        for skill in data["skills"].values():
+            source = FIXTURES.parent / "engine" / skill["path"]
+            target = work / skill["path"]
+            target.parent.mkdir(parents=True)
+            content = source.read_bytes()
+            target.write_bytes(content)
+            if "git_blob" in skill:
+                blob = f"blob {len(content)}\0".encode() + content
+                skill["git_blob"] = sha1(blob, usedforsecurity=False).hexdigest()
+            else:
+                skill["sha256"] = sha256(content).hexdigest()
+        self.plugin_path = work / f"{fixture}.json"
+        self.plugin_path.write_text(json.dumps(data), encoding="utf-8")
         self.root = tmp_path / "state"
         self.directory = self.root / RUN_ID
         self.state_path = self.directory / "state.json"
 
     def invoke(
         self,
-        host: FakeHost,
+        host: skillrun.Host,
         console: FakeConsole | None = None,
         *,
         goal: str = GOAL,

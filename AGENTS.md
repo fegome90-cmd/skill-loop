@@ -2,14 +2,15 @@
 
 ## Estado
 
-`v0.1.0 — Fase 2 cerrada`. El repositorio `skill-loop` contiene el módulo y CLI
+`v0.1.0 — Fase 3 cerrada`. El repositorio `skill-loop` contiene el módulo y CLI
 `skillrun`. La CLI expone `skillrun validate <plugin.json>`. El motor interno
-expone `run_plugin()` y `reconcile()` y está verificado con un host falso.
+expone `run_plugin()` y `reconcile()`. El adaptador `PiHost` controla Pi RPC
+como subproceso y está verificado con un Pi falso (`tests/fake_pi.py`).
 
 Para retomar el proyecto, consulta [PLAN.md](PLAN.md) y el
-[handoff de Fase 2](handoffs/HANDOFF-2026-11-20-PHASE-2.md). Pi RPC se integra
-en la Fase 3. Los subcomandos `run`, `status` y `reconcile` corresponden a la
-Fase 5.
+[handoff de Fase 3](handoffs/HANDOFF-2026-11-21-PHASE-3.md). Las rondas de
+grilling en consola son de la Fase 4. Los subcomandos `run`, `status` y
+`reconcile` corresponden a la Fase 5.
 
 ## Lectura por intención
 
@@ -44,8 +45,8 @@ mismo commit; nunca se edita el snapshot a mano.
   `src/skillrun.py`; console script `skillrun = "skillrun:main"`.
 - Dev: Ruff, mypy estricto, pytest, Bandit, codespell, yamllint,
   markdownlint-cli2, shellcheck y pre-commit.
-- El motor delega las operaciones del agente a la interfaz `Host`. El
-  adaptador que inicia y controla Pi como subproceso corresponde a la Fase 3.
+- El motor delega las operaciones del agente a la interfaz `Host`. `PiHost`
+  inicia y controla Pi 1.6 en modo RPC (PLAN.md §5.10).
 
 ## Reglas duras
 
@@ -82,7 +83,7 @@ mismo commit; nunca se edita el snapshot a mano.
 
 ```text
 src/skillrun.py       app completa (módulo único)
-tests/                pytest + fixtures + fake_host.py
+tests/                pytest + fixtures + fake_host.py + fake_pi.py
 plugins/              plugins de ejemplo (plugin.json)
 .agents/skills/       skill de entrada (Fase 5) + skills de Matt Pocock
                       vendorizadas, fijadas en .agents/skills-lock.json

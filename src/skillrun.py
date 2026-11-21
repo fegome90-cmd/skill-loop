@@ -7,16 +7,21 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import stat
+import subprocess  # nosec B404
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from functools import cache
 from os import PathLike
 from pathlib import Path, PureWindowsPath
+from threading import Condition, Event, Lock, Thread
+from time import monotonic
 from types import MappingProxyType
-from typing import Protocol, TypeGuard
+from typing import IO, Protocol, TypeGuard
 from uuid import uuid4
 
 __version__ = "0.1.0"
@@ -101,6 +106,12 @@ class Host(Protocol):
     ) -> Turn: ...
 
     def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class PiHistory:
+    entries: tuple[Mapping[str, object], ...]
+    leaf_id: str | None
 
 
 class Console(Protocol):
@@ -503,6 +514,34 @@ def _file_flags() -> int:
     return os.O_NOFOLLOW | os.O_NONBLOCK
 
 
+def _read_skill_file(name: str, *, parent_fd: int | None = None, private: bool = False) -> bytes:
+    fd = os.open(name, os.O_RDONLY | _file_flags(), dir_fd=parent_fd)
+    with os.fdopen(fd, "rb") as stream:
+        if private:
+            _check_open_private(stream.fileno(), name)
+        elif not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError("Expected a regular skill file")
+        return stream.read()
+
+
+def read_skill_bytes(path: Path) -> bytes:
+    """Read the original bytes without following a SKILL.md symlink."""
+    return _read_skill_file(os.fspath(path))
+
+
+def _matches_pin(data: bytes, pin: str) -> bool:
+    if len(pin) == _PIN_LENGTHS["sha256"]:
+        return hashlib.sha256(data).hexdigest() == pin
+    if len(pin) == _PIN_LENGTHS["git_blob"]:
+        blob = f"blob {len(data)}\0".encode("ascii") + data
+        return hashlib.sha1(blob, usedforsecurity=False).hexdigest() == pin
+    return False
+
+
+class _SkillCopyError(Exception):
+    """A failed skill preflight, before changing a run receipt."""
+
+
 @contextmanager
 def _storage_errors() -> Iterator[None]:
     try:
@@ -523,18 +562,17 @@ def _read_run_json(parent_fd: int, name: str) -> dict[str, object] | None:
     return data
 
 
-def _write_run_json(parent_fd: int, name: str, data: dict[str, object]) -> None:
+def _write_private_file(parent_fd: int, name: str, data: bytes) -> None:
     _check_entry(parent_fd, name)
     temporary = f".{name}.{uuid4().hex}.tmp"
     fd = os.open(
         temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _file_flags(), 0o600, dir_fd=parent_fd
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        with os.fdopen(fd, "wb") as stream:
             os.fchmod(stream.fileno(), 0o600)
             _check_open_private(stream.fileno(), temporary)
-            json.dump(data, stream, allow_nan=False)
-            stream.write("\n")
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
@@ -544,10 +582,43 @@ def _write_run_json(parent_fd: int, name: str, data: dict[str, object]) -> None:
             os.unlink(temporary, dir_fd=parent_fd)
 
 
+def _write_run_json(parent_fd: int, name: str, data: dict[str, object]) -> None:
+    _write_private_file(parent_fd, name, (json.dumps(data, allow_nan=False) + "\n").encode("utf-8"))
+
+
 class _RunStore:
-    def __init__(self, run_fd: int, run_id: str) -> None:
+    def __init__(self, run_fd: int, run_dir: Path) -> None:
         self._fd = run_fd
-        self._run_id = run_id
+        self._run_dir = run_dir
+        self._run_id = run_dir.name
+
+    def stage_skills(self, plugin: Plugin) -> tuple[dict[str, Path], dict[str, str]]:
+        paths: dict[str, Path] = {}
+        pins: dict[str, str] = {}
+        with _storage_errors(), ExitStack() as opened:
+            skills_fd = _open_directory(self._fd, "skills", create=True)
+            opened.callback(os.close, skills_fd)
+            _check_open_private(skills_fd, "skills", directory=True)
+            for name, skill in plugin.skills.items():
+                if not re.fullmatch(_ID_PATTERN, name):
+                    raise _StateError("Invalid skill name")
+                pin = skill.sha256 if skill.sha256 is not None else skill.git_blob
+                source = plugin.source.parent / skill.path
+                data = read_skill_bytes(source)
+                if pin is None or not _matches_pin(data, pin):
+                    raise _SkillCopyError(f"Skill pin mismatch: {name}")
+                skill_fd = _open_directory(skills_fd, name, create=True)
+                try:
+                    _check_open_private(skill_fd, name, directory=True)
+                    _write_private_file(skill_fd, "SKILL.md", data)
+                    staged = _read_skill_file("SKILL.md", parent_fd=skill_fd, private=True)
+                finally:
+                    os.close(skill_fd)
+                if not _matches_pin(staged, pin) or not _matches_pin(read_skill_bytes(source), pin):
+                    raise _SkillCopyError(f"Skill pin mismatch: {name}")
+                paths[name] = self._run_dir / "skills" / name / "SKILL.md"
+                pins[name] = pin
+        return paths, pins
 
     def load(self) -> _RunState | None:
         with _storage_errors():
@@ -679,7 +750,7 @@ def _locked_run(run_dir: Path, *, create: bool) -> Iterator[_RunStore]:
                     raise _RunBusy("Run lock is held") from exc
                 raise
             _check_entry(run_fd, "state.json")
-        store = _RunStore(run_fd, run_dir.name)
+        store = _RunStore(run_fd, storage_parent / state_root.name / absolute.name)
         try:
             yield store
         finally:
@@ -697,6 +768,469 @@ class _InvalidTurnError(Exception):
 
 def _reject_json_constant(_constant: str) -> object:
     raise ValueError("Invalid JSON constant")
+
+
+def _rpc_object(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise HostError("Expected a Pi RPC object")
+    return value
+
+
+def _bound_turn(
+    history: PiHistory,
+    cursor: str | None,
+    user: Mapping[str, object],
+    assistant: Mapping[str, object],
+) -> Turn:
+    leaf = history.leaf_id
+    if leaf is None or leaf == cursor:
+        raise HostError("Pi did not advance the active branch")
+    entries: dict[str, Mapping[str, object]] = {}
+    for item in history.entries:
+        entry_id = item.get("id")
+        if not _has_text(entry_id) or entry_id in entries:
+            raise HostError("Invalid Pi history entry id")
+        entries[entry_id] = item
+
+    messages: list[dict[str, object]] = []
+    current: str | None = leaf
+    while current != cursor:
+        entry = entries.pop(current, None) if current is not None else None
+        if entry is None or "parentId" not in entry or not isinstance(entry.get("type"), str):
+            raise HostError("Pi active branch does not reach the turn cursor")
+        parent = entry["parentId"]
+        if parent is not None and not _has_text(parent):
+            raise HostError("Invalid Pi history parent id")
+        current = parent
+        if entry["type"] == "message":
+            message = _rpc_object(entry.get("message"))
+            role = message.get("role")
+            if role not in ("system", "user", "assistant", "toolResult"):
+                raise HostError("Invalid role on the Pi active branch")
+            if role != "system":
+                messages.append(message)
+
+    # The walk ran from leaf to cursor, so the final assistant is first here.
+    if (
+        len(messages) < 2
+        or messages[-1].get("role") != "user"
+        or any(message.get("role") == "user" for message in messages[:-1])
+        or messages[-1].get("content") != user["content"]
+        or messages[0].get("role") != "assistant"
+        or messages[0].get("stopReason") != "stop"
+        or messages[0].get("content") != assistant["content"]
+    ):
+        raise HostError("Pi active branch does not match the settled turn")
+    blocks = assistant["content"]
+    if not isinstance(blocks, list):
+        raise HostError("Invalid final Pi message content")
+    text: list[str] = []
+    for raw in blocks:
+        block = _rpc_object(raw)
+        if block.get("type") == "text":
+            part = block.get("text")
+            if not isinstance(part, str):
+                raise HostError("Invalid Pi text block")
+            text.append(part)
+    return Turn("\n".join(text), leaf)
+
+
+class _PiStdoutClosedError(HostError):
+    """Pi closed stdout, which is only expected during close()."""
+
+
+class PiHost:
+    """Drive one Pi RPC child and verify turns against its active session branch."""
+
+    def __init__(
+        self,
+        *,
+        cwd: Path,
+        session_dir: Path,
+        session_id: str,
+        command: Sequence[str] = ("pi",),
+        turn_timeout: float = 600.0,
+        command_timeout: float = 30.0,
+    ) -> None:
+        self._cwd = cwd.absolute()
+        self._session_dir = self._cwd / session_dir
+        self._session_id = session_id
+        self._command = tuple(command)
+        self._turn_timeout = turn_timeout
+        self._command_timeout = command_timeout
+        self._skills: dict[str, Path] = {}
+        self._process: subprocess.Popen[bytes] | None = None
+        self._reader: Thread | None = None
+        self._dead = False
+        self._reap_lock = Lock()
+        self._clean_exit: bool | None = None
+        self._stop_reader = Event()
+        self._received = Condition()
+        self._pending: str | None = None
+        self._failure: str | None = None
+        self._response: tuple[float, dict[str, object]] | None = None
+        self._events: deque[tuple[float, dict[str, object]]] = deque()
+        self._collecting_turn = False
+        self._closing = False
+        self._drain_deadline = 0.0
+
+    @contextmanager
+    def _operation(self) -> Iterator[None]:
+        try:
+            yield
+        except BaseException:
+            # A receipt callback can fail independently of Pi. Preserve its exception.
+            with suppress(Exception):
+                self._shutdown()
+            raise
+
+    def _resolved_path(self, value: str) -> Path:
+        try:
+            return (self._cwd / value).resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HostError("Unable to resolve a Pi path") from exc
+
+    def start(self, skills: Mapping[str, Path]) -> None:
+        with self._operation():
+            if self._dead or self._process is not None:
+                raise HostError("Pi host cannot be started again")
+            if not re.fullmatch(_ID_PATTERN, self._session_id):
+                raise HostError("Invalid Pi session id")
+            try:
+                self._session_dir.mkdir(mode=0o700, exist_ok=True)
+                session_fd = os.open(
+                    self._session_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                try:
+                    _check_open_private(session_fd, "Pi session directory", directory=True)
+                except _StateError as exc:
+                    raise HostError("Unsafe Pi session directory") from exc
+                finally:
+                    os.close(session_fd)
+                session_root = self._resolved_path(str(self._session_dir.parent))
+                session_root /= self._session_dir.name
+                if not self._command:
+                    raise HostError("Missing Pi executable")
+                argv = [
+                    *self._command,
+                    "--mode",
+                    "rpc",
+                    "--session-dir",
+                    str(self._session_dir),
+                    "--session-id",
+                    self._session_id,
+                    "--tools",
+                    "read,grep,find,ls",
+                    "--no-context-files",
+                    "--no-extensions",
+                    "--no-mcp",
+                    "--no-skills",
+                    "--no-prompt-templates",
+                ]
+                self._skills = dict(skills)
+                for path in self._skills.values():
+                    argv.extend(("--skill", str(path)))
+                env = os.environ.copy()
+                for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "SSH_AUTH_SOCK"):
+                    env.pop(key, None)
+                # Pi runs with an explicit argv and no shell.
+                process = subprocess.Popen(  # nosec B603
+                    argv,
+                    cwd=self._cwd,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    bufsize=0,
+                )
+                self._process = process
+                assert process.stdin is not None and process.stdout is not None
+                os.set_blocking(process.stdin.fileno(), False)
+                self._reader = Thread(
+                    target=self._read_output,
+                    args=(process, process.stdout),
+                    name="skillrun-pi-reader",
+                    daemon=True,
+                )
+                self._reader.start()
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise HostError("Unable to launch Pi RPC") from exc
+
+            data = self._request("get_state")
+            session_file = data.get("sessionFile")
+            if (
+                data.get("sessionId") != self._session_id
+                or data.get("isStreaming") is not False
+                or not _has_text(session_file)
+            ):
+                raise HostError("Pi reported the wrong session state")
+            bound = self._resolved_path(session_file)
+            if session_root not in bound.parents:
+                raise HostError("Pi session file is outside its private directory")
+
+    def verify_skills(self, expected: Mapping[str, str]) -> None:
+        with self._operation():
+            self._live_process()
+            if self._skills.keys() != expected.keys():
+                raise HostError("Pi skill names do not match the pins")
+            remaining: dict[str, Path] = {}
+            try:
+                for name, path in self._skills.items():
+                    data = _read_skill_file(str(self._cwd / path), private=True)
+                    if not _matches_pin(data, expected[name]):
+                        raise HostError("Pi skill copy does not match its pin")
+                    remaining[f"skill:{name}"] = self._resolved_path(str(path))
+            except (OSError, _StateError, ValueError) as exc:
+                raise HostError("Unable to read a private Pi skill copy") from exc
+
+            commands = self._request("get_commands").get("commands")
+            if not isinstance(commands, list):
+                raise HostError("Invalid Pi command list")
+            for raw in commands:
+                command = _rpc_object(raw)
+                if command.get("source") != "skill":
+                    continue
+                registered_name = command.get("name")
+                source = _rpc_object(command.get("sourceInfo")).get("path")
+                if (
+                    not isinstance(registered_name, str)
+                    or not _has_text(source)
+                    or remaining.pop(registered_name, None) != self._resolved_path(source)
+                ):
+                    raise HostError("Unexpected Pi skill registration")
+            if remaining:
+                raise HostError("Missing Pi skill registration")
+
+    def _read_output(self, process: subprocess.Popen[bytes], stream: IO[bytes]) -> None:
+        partial = bytearray()
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(stream, selectors.EVENT_READ)
+                while True:
+                    if self._stop_reader.is_set() and monotonic() >= self._drain_deadline:
+                        # A descendant still writing after Pi exited: never wait unbounded.
+                        raise HostError("Pi RPC stdout stayed open after exit")
+                    if not selector.select(0.1):
+                        # Drain everything Pi wrote before exiting. Stop only once the
+                        # child is reaped and stdout is idle (e.g. a descendant keeps it open).
+                        if self._stop_reader.is_set():
+                            break
+                        continue
+                    chunk = os.read(stream.fileno(), 65536)
+                    if not chunk:
+                        if partial:
+                            # Bytes after the last LF are a truncated record, never a clean EOF.
+                            raise HostError("Pi RPC stdout ended inside a record")
+                        raise _PiStdoutClosedError("Pi RPC stdout ended")
+                    *lines, tail = chunk.split(b"\n")
+                    for line in lines:
+                        partial.extend(line)
+                        record = _rpc_object(
+                            json.loads(
+                                partial.removesuffix(b"\r").decode("utf-8"),
+                                object_pairs_hook=_unique_object,
+                                parse_constant=_reject_json_constant,
+                            )
+                        )
+                        partial.clear()
+                        self._record_output(record)
+                    partial.extend(tail)
+        except (OSError, ValueError, RecursionError, HostError) as exc:
+            with self._received:
+                # Only stdout EOF is expected once close() has asked Pi to exit.
+                if not (self._closing and isinstance(exc, _PiStdoutClosedError)):
+                    self._failure = (
+                        str(exc) if isinstance(exc, HostError) else "Invalid Pi RPC stream"
+                    )
+                self._received.notify_all()
+            self._reap(process)
+        finally:
+            stream.close()
+
+    def _record_output(self, record: dict[str, object]) -> None:
+        kind = record.get("type")
+        if not isinstance(kind, str) or kind == "extension_ui_request":
+            raise HostError("Invalid Pi RPC record type")
+        received = monotonic(), record
+        with self._received:
+            if kind == "response":
+                if self._pending is None or record.get("id") != self._pending:
+                    raise HostError("Unexpected Pi response id")
+                self._pending = None
+                self._response = received
+            elif self._collecting_turn and kind in ("message_end", "agent_settled"):
+                self._events.append(received)
+            else:
+                return
+            self._received.notify_all()
+
+    def _live_process(self) -> subprocess.Popen[bytes]:
+        if self._failure is not None:
+            raise HostError(self._failure)
+        if self._dead or self._process is None:
+            raise HostError("Pi host is not running")
+        return self._process
+
+    def _send(self, stream: IO[bytes], payload: bytes, deadline: float) -> None:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(stream, selectors.EVENT_WRITE)
+                remaining = memoryview(payload)
+                while remaining:
+                    timeout = deadline - monotonic()
+                    if timeout <= 0 or not selector.select(timeout):
+                        raise HostError("Pi RPC send timed out")
+                    with self._received, suppress(BlockingIOError):
+                        self._live_process()
+                        remaining = remaining[os.write(stream.fileno(), remaining) :]
+        except (OSError, ValueError) as exc:
+            raise HostError("Unable to write to Pi RPC stdin") from exc
+
+    def _wait_record(self, deadline: float, *, response: bool) -> dict[str, object]:
+        with self._received:
+            while True:
+                self._live_process()
+                if response and self._response is not None:
+                    received, record = self._response
+                    self._response = None
+                    break
+                if not response and self._events:
+                    received, record = self._events.popleft()
+                    break
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise HostError("Pi RPC timed out")
+                self._received.wait(remaining)
+        if received > deadline:
+            raise HostError("Pi RPC timed out")
+        return record
+
+    def _request(
+        self, kind: str, *, deadline: float | None = None, **fields: object
+    ) -> dict[str, object]:
+        if deadline is None:
+            deadline = monotonic() + self._command_timeout
+        request_id = uuid4().hex
+        payload = (json.dumps({"id": request_id, "type": kind, **fields}) + "\n").encode("utf-8")
+        with self._received:
+            process = self._live_process()
+            self._pending = request_id
+            if kind == "prompt":
+                self._events.clear()
+                self._collecting_turn = True
+        assert process.stdin is not None
+        self._send(process.stdin, payload, deadline)
+        response = self._wait_record(deadline, response=True)
+        if response.get("success") is not True:
+            raise HostError(f"Pi rejected {kind}")
+        return _rpc_object(response.get("data"))
+
+    def _history(self, cursor: str | None) -> PiHistory:
+        data = (
+            self._request("get_entries")
+            if cursor is None
+            else self._request("get_entries", since=cursor)
+        )
+        entries, leaf = data.get("entries"), data.get("leafId")
+        if (
+            not isinstance(entries, list)
+            or "leafId" not in data
+            or (leaf is not None and not _has_text(leaf))
+        ):
+            raise HostError("Invalid Pi history response")
+        return PiHistory(tuple(_rpc_object(entry) for entry in entries), leaf)
+
+    def history(self, cursor: str | None) -> PiHistory:
+        with self._operation():
+            return self._history(cursor)
+
+    def prompt(
+        self,
+        text: str,
+        on_prepared: Callable[[str | None], None],
+        on_accepted: Callable[[], None],
+    ) -> Turn:
+        with self._operation():
+            cursor = self._history(None).leaf_id
+            on_prepared(cursor)
+            deadline = monotonic() + self._turn_timeout
+            data = self._request("prompt", message=text, deadline=deadline)
+            if data.get("disposition") != "started":
+                raise HostError("Pi did not start the prompt")
+            on_accepted()
+            user, assistant = self._turn_messages(deadline)
+            return _bound_turn(self._history(cursor), cursor, user, assistant)
+
+    def _turn_messages(self, deadline: float) -> tuple[dict[str, object], dict[str, object]]:
+        user = assistant = None
+        while True:
+            event = self._wait_record(deadline, response=False)
+            if event["type"] == "agent_settled":
+                with self._received:
+                    self._collecting_turn = False
+                    self._events.clear()
+                if event.get("aborted") is not False:
+                    raise HostError("Pi turn was aborted or failed to settle")
+                break
+            message = _rpc_object(event.get("message"))
+            if message.get("role") == "assistant":
+                assistant = message
+            elif message.get("role") == "user":
+                if user is not None:
+                    raise HostError("Multiple user messages in the Pi turn")
+                user = message
+        if (
+            user is None
+            or not isinstance(user.get("content"), (str, list))
+            or assistant is None
+            or assistant.get("stopReason") != "stop"
+            or not isinstance(assistant.get("content"), list)
+        ):
+            raise HostError("Pi turn did not end with a final assistant message")
+        return user, assistant
+
+    def _reap(self, process: subprocess.Popen[bytes]) -> bool:
+        with self._reap_lock:
+            if self._clean_exit is None:
+                if process.stdin is not None:
+                    with suppress(OSError):
+                        process.stdin.close()
+                killed = False
+                try:
+                    process.wait(timeout=self._command_timeout)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=self._command_timeout)
+                    except subprocess.TimeoutExpired:
+                        killed = True
+                        process.kill()
+                        process.wait()
+                self._clean_exit = not killed and process.returncode == 0
+                self._drain_deadline = monotonic() + self._command_timeout
+                self._stop_reader.set()
+            return self._clean_exit
+
+    def _shutdown(self) -> bool:
+        self._dead = True
+        process = self._process
+        if process is None:
+            return True
+        clean_exit = self._reap(process)
+        if self._reader is not None and self._reader.ident is not None:
+            self._reader.join()
+        elif process.stdout is not None:
+            process.stdout.close()
+        return clean_exit
+
+    def close(self) -> None:
+        if self._dead:
+            return
+        with self._received:
+            self._closing = True
+        clean_exit = self._shutdown()
+        # A fatal record seen after the last turn still invalidates the session.
+        if not clean_exit or self._failure is not None:
+            raise HostError("Pi RPC did not shut down cleanly")
 
 
 def _step_result(step: Step, text: str) -> Mapping[str, object] | None:
@@ -740,14 +1274,7 @@ def _prompt_text(step: Step, goal: str) -> str:
 
 
 @contextmanager
-def _started_host(host: Host, plugin: Plugin) -> Iterator[None]:
-    paths = {name: plugin.source.parent / skill.path for name, skill in plugin.skills.items()}
-    pins: dict[str, str] = {}
-    for name, skill in plugin.skills.items():
-        pin = skill.sha256 if skill.sha256 is not None else skill.git_blob
-        if pin is None:
-            raise _StateError("Missing skill pin")
-        pins[name] = pin
+def _started_host(host: Host, paths: Mapping[str, Path], pins: Mapping[str, str]) -> Iterator[None]:
     try:
         host.start(paths)
         host.verify_skills(pins)
@@ -871,15 +1398,28 @@ def _advance_run(
         return _block_step(store, state, _UNCERTAIN)
 
     step = plugin.steps[first_index]
+
+    def stage_skills() -> tuple[dict[str, Path], dict[str, str]]:
+        try:
+            return store.stage_skills(plugin)
+        except _StateError as exc:
+            raise _SkillCopyError("Skill copy failed") from exc
+
     try:
         with ExitStack() as session:
+            staged = None
             started = False
             for index in range(first_index, len(plugin.steps)):
                 step = plugin.steps[index]
+                has_next_step = index + 1 < len(plugin.steps)
                 if state.status == "ready":
+                    if staged is None:
+                        staged = stage_skills()
+                    if state.revision == 0:
+                        state = store.save(state)
                     store.clear_trace(state)
                     if not started:
-                        session.enter_context(_started_host(host, plugin))
+                        session.enter_context(_started_host(host, *staged))
                         started = True
                     state = _send_turn(store, state, host, _prompt_text(step, goal))
                 if state.status == "settled":
@@ -890,6 +1430,10 @@ def _advance_run(
                     result = _step_result(step, text)
                     if result is None:
                         return _block_step(store, state, "Result does not match the step contract")
+                    # A recovered step can lead to a launch. Check its pins before advancing
+                    # the durable receipt or asking for confirmation again.
+                    if has_next_step and staged is None:
+                        staged = stage_skills()
                     event_id = None
                     if step.kind == "grilling":
                         confirmed, event_id = console.confirm(step.id, result)
@@ -897,7 +1441,7 @@ def _advance_run(
                             return _block_step(
                                 store, state, "Grilling confirmation was not recorded"
                             )
-                    if index + 1 == len(plugin.steps):
+                    if not has_next_step:
                         try:
                             session.close()
                         except (Exception, KeyboardInterrupt):
@@ -906,12 +1450,16 @@ def _advance_run(
                     state = store.save(
                         replace(state, status="done", confirmation_event_id=event_id)
                     )
-                if index + 1 < len(plugin.steps):
+                if has_next_step:
+                    if staged is None:
+                        staged = stage_skills()
                     state = store.save(_fresh_step(state, plugin.steps[index + 1].id))
         state = store.save(
             replace(_fresh_step(state, state.step_id, attempt=state.attempt), status="complete")
         )
         return RunOutcome(state.status, EXIT_DONE)
+    except _SkillCopyError as exc:
+        return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
     except (HostError, _InvalidTurnError) as exc:
         current = store.load()
         reason = (
@@ -949,9 +1497,7 @@ def run_plugin(
         with _locked_run(_run_directory(state_root, run_id), create=True) as store:
             state = store.load()
             if state is None:
-                state = store.save(
-                    _RunState(run_id, plugin.digest, goal_sha256, plugin.steps[0].id)
-                )
+                state = _RunState(run_id, plugin.digest, goal_sha256, plugin.steps[0].id)
             elif (state.plugin_digest, state.goal_sha256) != (plugin.digest, goal_sha256):
                 return RunOutcome("blocked", EXIT_BLOCKED, reason="Plugin or goal changed")
             return _advance_run(store, state, plugin, goal, host, console)

@@ -182,6 +182,38 @@ class Host(Protocol):
   la Fase 3. Las rondas de grilling y el snapshot del checkout son de la
   Fase 4. Los comandos `run`, `status` y `reconcile` son de la Fase 5.
 
+### 5.10 Contrato aprobado de la Fase 3
+
+- `run_plugin()` posee los pins y el directorio privado. Bajo el lock del run y
+  antes de `Host.start()`, lee cada `SKILL.md` original con
+  `read_skill_bytes()` (sin seguir symlinks), verifica el pin (`sha256` o
+  `git_blob`), escribe la copia en `<run_dir>/skills/<nombre>/SKILL.md`
+  (`0700`/`0600`, atómica, `fsync`), la relee y vuelve a verificar el
+  original. Un fallo devuelve `blocked` (`10`) sin llamar al host, sin
+  subprocesos y sin cambiar el estado persistido. `Host.start()` recibe las
+  copias. La firma de `Host` no cambia.
+- `PiHost(cwd, session_dir, session_id, command, turn_timeout,
+  command_timeout)` implementa `Host` sobre `pi --mode rpc` con
+  `--session-dir`/`--session-id` (nunca la última sesión), `--tools
+  read,grep,find,ls`, `--no-context-files --no-extensions --no-mcp
+  --no-skills --no-prompt-templates` y un `--skill` por copia. Quita
+  `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` y `SSH_AUTH_SOCK` del
+  entorno. El directorio de sesión debe ser propio, `0700` y sin ACL extendida.
+- `verify_skills()` relee las copias y exige por `get_commands` exactamente
+  `skill:<nombre>` con `sourceInfo.path` igual a la copia.
+- Transporte JSONL estricto: separación solo por LF, UTF-8 y objeto JSON.
+  Respuesta sin id pendiente, `extension_ui_request`, bytes truncados al EOF o
+  stdout abierto tras la salida de Pi son errores fatales.
+- Turno: cursor `leafId` → `on_prepared` → `prompt` (una sola vez) →
+  `on_accepted` solo con `disposition=started` → `agent_settled(aborted=false)`
+  y último `message_end` del asistente con `stop` → la cadena `parentId` desde
+  `leafId` llega al cursor con un único mensaje `user` y el mismo contenido.
+  Timeout por turno. Todo fallo recoge al hijo y deja la instancia inutilizable.
+- `history(cursor)` solo envía `get_entries` y no acredita un `agent_settled`.
+  `close()` escala stdin → SIGTERM → SIGKILL y falla si hubo salida forzada,
+  código distinto de cero o un error de protocolo registrado.
+- Detalle y evidencia: [registro de Fase 3](odd/tasks/phase-3-pi-rpc.md).
+
 ## 6. Fases
 
 Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de código a escribir/leer (≈ 10–15 k tokens por cada 100 líneas de código+tests, más lectura de referencias).
@@ -190,7 +222,7 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 |---|---|---|---|---|---|---|
 | 1 | Repo + esquema de plugin | `skillrun validate` acepta/rechaza plugins de ejemplo; tests verdes | 30–50 k | no medido (orquestador, worker y tester) | Opus 5.5 orq. + Codex gpt-6.2-sol (worker high, tester xhigh) | hecho (2026-11-20) |
 | 2 | Máquina de estados + recibos + lock | Run completo con host falso; tests de crash en cada etapa | 50–80 k | no medido por rol | Opus 5.5 / medio (arranque), Codex `gpt-6.2-sol` / `xhigh` (orquestación), `high` (WORKER), `xhigh` (TESTER) | hecho (2026-11-20) |
-| 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | — | Opus 5.5 / medio | pendiente |
+| 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | no medido por rol | Opus 5.5 / medio (orquestación), Codex `gpt-6.2-sol` / `high` (WORKER), `xhigh` (TESTER y revisión nativa) | hecho (2026-11-21) |
 | 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | — | Sonnet 5.5 / medio | pendiente |
 | 5 | CLI (`run/status/reconcile`), skill de entrada, README | Comandos documentados y probados | 25–40 k | — | Sonnet 5.5 / bajo | pendiente |
 | 6 | Prueba real con Pi + grilling original | Un run real `discovery → github-knowledge` con evidencia guardada | 20–40 k | — | Sonnet 5.5 / medio (el usuario ejecuta Pi) | pendiente |
@@ -199,7 +231,7 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 
 Dependencias: cada fase usa lo construido en las anteriores; la 6 requiere Pi 1.4+ instalado y el `SKILL.md` de grilling fijado.
 
-Último cierre: [Fase 2](handoffs/HANDOFF-2026-11-20-PHASE-2.md).
+Último cierre: [Fase 3](handoffs/HANDOFF-2026-11-21-PHASE-3.md).
 
 ## 7. Estructura del repo
 

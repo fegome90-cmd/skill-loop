@@ -14,7 +14,8 @@ ejecutado ni que pase.
   `.yamllint.yaml`, `.markdownlint-cli2.jsonc`, `.codespellrc`, `.shellcheckrc`
   y `.pre-commit-config.yaml`.
 - Variables de entorno: `XDG_STATE_HOME` absoluto es opcional para el motor.
-  Las pruebas de Fase 2 usan un host falso y un directorio temporal privado.
+  Las pruebas usan un host falso, un Pi falso como subproceso
+  (`tests/fake_pi.py`) y un directorio temporal privado. Ninguna llama a Pi real.
 - Herramientas externas de documentación, no declaradas como dependencias:
   el guion `agent-docs-kit` (PEP 723) y `graphify` 0.9.26.
 
@@ -25,13 +26,13 @@ Todos se ejecutan desde la raíz del repositorio.
 | Acción | Comando | Fuente | Estado de verificación |
 | --- | --- | --- | --- |
 | Sincronizar entorno | `uv sync` | `Makefile` (`install`) | Solo leído |
-| Lint completo | `make lint` | `Makefile` | Ejecutado al cierre de Fase 2: código 0 |
+| Lint completo | `make lint` | `Makefile` | Ejecutado al cierre de Fase 3: código 0 |
 | Ruff lint | `uv run ruff check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, "All checks passed!" |
 | Formato | `uv run ruff format --check .` | `Makefile` (`lint-python`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | Tipos | `uv run mypy src tests` | `Makefile` (`lint-python`) | Strict sobre código y tests, ejecutado en Fase 2: código 0 |
 | Seguridad | `uv run bandit -c pyproject.toml -r src` | `Makefile` (`lint-python`) | Ejecutado: código 0, 0 hallazgos |
 | Ortografía | `uv run codespell` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin salida |
-| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 2: código 0, 208 aprobadas |
+| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 3: código 0, 280 aprobadas |
 | Validar un plugin | `uv run skillrun validate <plugin.json>` | `src/skillrun.py` (`main`) | Comparación de Fase 2 contra `e636858`: coincidieron stdout, stderr y códigos 0, 2 y 10 en los casos ejecutados |
 | Markdown | `uv run pre-commit run markdownlint-cli2 --all-files` | `Makefile` (`lint-docs`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock` | `Makefile` (`lint-yaml`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
@@ -75,5 +76,7 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
 - El [handoff de Fase 2](../../handoffs/HANDOFF-2026-11-20-PHASE-2.md) enlaza
   el candidato verificado y registra las pruebas de caída de proceso, permisos
   y compatibilidad. La suite del motor usa primitivas POSIX.
+- El [handoff de Fase 3](../../handoffs/HANDOFF-2026-11-21-PHASE-3.md) registra
+  la verificación del adaptador Pi RPC con Pi falso y la revisión nativa.
 - Pendiente: decidir si conviene un objetivo `make codemap`; hoy el comando del
   grafo vive sólo en este documento.

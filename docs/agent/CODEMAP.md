@@ -18,6 +18,8 @@ responsabilidades e invariantes, en [ARCHITECTURE.md](ARCHITECTURE.md).
 | `src/skillrun.py` | App completa (módulo único) |
 | `run_plugin()`, `reconcile()` en `src/skillrun.py` | Supervisor, recuperación y decisiones sobre turnos inciertos |
 | `Host`, `Turn`, `HostError` en `src/skillrun.py` | Interfaz del host para el adaptador Pi RPC |
+| `PiHost`, `PiHistory`, `read_skill_bytes()` en `src/skillrun.py` | Adaptador Pi RPC y lectura de skills fijadas |
+| `tests/fake_pi.py` | Pi falso como subproceso, con turnos de herramientas y escenarios de fallo |
 | `tests/` | Suite pytest y fixtures |
 | `plugins/github-gateway/plugin.json` | Plugin de ejemplo `skillrun/v1` |
 | `.agents/skills-lock.json` | Pins (git blob) de las skills vendorizadas |

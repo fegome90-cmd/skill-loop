@@ -11,7 +11,7 @@ Composición e invariantes de `skillrun`. El diseño completo está en
 | Procedencia | `docs/constitution/AGENTIC-CONSTITUTION.md`, `docs/constitution/SOURCE.lock` | Texto canónico de referencia y su identidad verificable |
 | Mapeo | `docs/CONSTITUTION.md` | Precedencia, estado y procedimiento de actualización del snapshot |
 | Código | `src/skillrun.py` | App completa en un módulo (esquema, máquina de estados, host, CLI según fase) |
-| Tests | `tests/` | pytest, fixtures de plugins y host falso (`fake_host.py`) |
+| Tests | `tests/` | pytest, fixtures de plugins, host falso (`fake_host.py`) y Pi falso (`fake_pi.py`) |
 | Plugins | `plugins/*/plugin.json` | Plugins de ejemplo `skillrun/v1` |
 | Skills vendorizadas | `.agents/skills/`, `.agents/skills-lock.json` | Copias fijadas por git blob; no se editan ni lintean |
 | Plan y cierres | `PLAN.md`, `handoffs/`, `prompts/`, `reference/REVIEWS.md` | Decisiones, fases y errores conocidos |
@@ -19,7 +19,7 @@ Composición e invariantes de `skillrun`. El diseño completo está en
 | Calidad | `Makefile`, `.pre-commit-config.yaml`, `.yamllint.yaml`, `.markdownlint-cli2.jsonc`, `.codespellrc`, `.shellcheckrc` | Objetivos y configuración de lint |
 | Documentación para agentes | `AGENTS.md`, `docs/agent/*` | Entrada, contexto, arquitectura, mapa y operación |
 
-El motor supervisa un `Host` inyectado. La Fase 3 añade el adaptador Pi RPC.
+El motor supervisa un `Host` inyectado. `PiHost` es el adaptador Pi RPC.
 El estado de runs vive fuera del repositorio en la raíz privada definida por
 el contrato de [PLAN.md](../../PLAN.md) §5.9.
 
@@ -38,7 +38,7 @@ el contrato de [PLAN.md](../../PLAN.md) §5.9.
 
 ## Dependencias
 
-- Runtime: solo stdlib (`dependencies = []`). Host externo: Pi 1.4+ (Fase 3+).
+- Runtime: solo stdlib (`dependencies = []`). Host externo: Pi RPC (contrato verificado contra 1.6.0).
 - Desarrollo: `pytest`, `ruff`, `mypy`, `pre-commit`, `bandit`, `codespell` y
   `yamllint` en el grupo `dev`.
 - Externas y opcionales, sólo para documentación: el guion `agent-docs-kit` y
@@ -64,8 +64,10 @@ el contrato de [PLAN.md](../../PLAN.md) §5.9.
 - Fase 2 cerrada. `run_plugin()` coordina el host, el lock, los recibos y la
   validación de resultados. `reconcile()` registra la decisión explícita
   sobre un turno incierto. `skillrun validate` es el subcomando disponible.
-- La integración del adaptador empieza en el
-  [handoff de Fase 2](../../handoffs/HANDOFF-2026-11-20-PHASE-2.md).
+- Fase 3 cerrada. `run_plugin()` copia y verifica las skills fijadas antes de
+  iniciar el host. `PiHost` controla Pi RPC con cierre de turno estricto y
+  verificación de rama activa (PLAN.md §5.10,
+  [handoff de Fase 3](../../handoffs/HANDOFF-2026-11-21-PHASE-3.md)).
 
 ## Evidencia y pendientes
 

@@ -4,11 +4,12 @@ Ejecución determinista de N skills en orden, con `grilling` (Matt Pocock) como
 discovery obligatorio. Una CLI en Python estándar lanza y controla al agente
 (Pi RPC primero) y lo obliga a invocar las skills de un plugin una a una.
 
-**Estado: v0.1.0 — Fase 2 cerrada.** El motor de runs, los recibos y el lock
-se verificaron con un host falso. La CLI expone `uv run skillrun validate
+**Estado: v0.1.0 — Fase 3 cerrada.** El motor de runs, los recibos y el lock
+se verificaron con un host falso, y el adaptador Pi RPC con un Pi falso como
+subproceso. La CLI expone `uv run skillrun validate
 <plugin.json>` (0 válido · 10 inválido · 70 interno · 2 uso).
 El alcance por fase está en [PLAN.md](PLAN.md) y la evidencia de cierre en el
-[handoff de Fase 2](handoffs/HANDOFF-2026-11-20-PHASE-2.md).
+[handoff de Fase 3](handoffs/HANDOFF-2026-11-21-PHASE-3.md).
 
 Repositorio: `skill-loop`. Producto, CLI y módulo: `skillrun`.
 
