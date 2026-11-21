@@ -155,12 +155,12 @@ def test_python_module_validate_emits_one_json_line(
         assert completed.stderr.strip()
 
 
-def test_validate_main_rejects_placeholder_pin_in_github_gateway(
+def test_validate_main_accepts_pinned_github_gateway(
     repo_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     plugin_file = repo_root / "plugins" / "github-gateway" / "plugin.json"
-    assert skillrun.main(["validate", str(plugin_file)]) == 10
+    assert skillrun.main(["validate", str(plugin_file)]) == 0
 
     response = _read_json_line(capsys.readouterr().out)
-    assert response["ok"] is False
-    assert any(error.startswith("skills.github-project.sha256: ") for error in response["errors"])
+    assert response["ok"] is True
+    assert response["plugin_id"] == "github-gateway"
