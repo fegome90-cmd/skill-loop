@@ -26,13 +26,13 @@ Todos se ejecutan desde la raíz del repositorio.
 | Acción | Comando | Fuente | Estado de verificación |
 | --- | --- | --- | --- |
 | Sincronizar entorno | `uv sync` | `Makefile` (`install`) | Solo leído |
-| Lint completo | `make lint` | `Makefile` | Ejecutado al cierre de Fase 3: código 0 |
+| Lint completo | `make lint` | `Makefile` | Ejecutado al cierre de Fase 4 en copia aislada: código 0 |
 | Ruff lint | `uv run ruff check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, "All checks passed!" |
 | Formato | `uv run ruff format --check .` | `Makefile` (`lint-python`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | Tipos | `uv run mypy src tests` | `Makefile` (`lint-python`) | Strict sobre código y tests, ejecutado en Fase 2: código 0 |
 | Seguridad | `uv run bandit -c pyproject.toml -r src` | `Makefile` (`lint-python`) | Ejecutado: código 0, 0 hallazgos |
 | Ortografía | `uv run codespell` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin salida |
-| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 3: código 0, 280 aprobadas |
+| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 4: código 0, 342 aprobadas |
 | Validar un plugin | `uv run skillrun validate <plugin.json>` | `src/skillrun.py` (`main`) | Comparación de Fase 2 contra `e636858`: coincidieron stdout, stderr y códigos 0, 2 y 10 en los casos ejecutados |
 | Markdown | `uv run pre-commit run markdownlint-cli2 --all-files` | `Makefile` (`lint-docs`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock` | `Makefile` (`lint-yaml`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
@@ -63,6 +63,10 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
 ## Procesos y diagnóstico
 
 - No hay servicios, puertos ni procesos de larga duración.
+- `run`, `status` y `reconcile` están documentados en la
+  [referencia de la CLI](../../README.md#cli).
+  `TerminalConsole` lee de stdin y escribe en stderr. El resultado
+  operativo de cada comando se emite como JSON en stdout.
 - `pytest` devuelve 5 cuando no recolecta tests. Ejecuta pytest y `make lint`
   como comprobaciones separadas.
 - `make lint` propaga fallos: no hay `|| true`. Un componente fallido provoca
@@ -78,5 +82,8 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
   y compatibilidad. La suite del motor usa primitivas POSIX.
 - El [handoff de Fase 3](../../handoffs/HANDOFF-2026-11-21-PHASE-3.md) registra
   la verificación del adaptador Pi RPC con Pi falso y la revisión nativa.
+- El [handoff de Fase 4](../../handoffs/HANDOFF-2026-11-21-PHASE-4.md) registra
+  la prueba de grilling, confirmación y pasos posteriores en una sola sesión
+  con Pi falso. La validación con Pi real se registró en la Fase 6.
 - Pendiente: decidir si conviene un objetivo `make codemap`; hoy el comando del
   grafo vive sólo en este documento.

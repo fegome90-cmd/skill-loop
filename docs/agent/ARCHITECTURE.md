@@ -63,11 +63,20 @@ el contrato de [PLAN.md](../../PLAN.md) §5.9.
 
 - Fase 2 cerrada. `run_plugin()` coordina el host, el lock, los recibos y la
   validación de resultados. `reconcile()` registra la decisión explícita
-  sobre un turno incierto. `skillrun validate` es el subcomando disponible.
+  sobre un turno incierto.
 - Fase 3 cerrada. `run_plugin()` copia y verifica las skills fijadas antes de
   iniciar el host. `PiHost` controla Pi RPC con cierre de turno estricto y
   verificación de rama activa (PLAN.md §5.10,
   [handoff de Fase 3](../../handoffs/HANDOFF-2026-11-21-PHASE-3.md)).
+- Fase 4 cerrada. El supervisor controla las rondas y la confirmación de
+  grilling; `TerminalConsole` lee de stdin y escribe en stderr. Los recibos y
+  trazas distinguen turnos. Un cambio de workspace bloquea de forma definitiva,
+  incluso si se detecta al retomar un turno interrumpido. Ver PLAN.md §5.11 y
+  el [handoff de Fase 4](../../handoffs/HANDOFF-2026-11-21-PHASE-4.md).
+- Fase 5: `run`, `status` y `reconcile` exponen el motor. El checkpoint
+  completo conserva el recibo final para verificar la traza antes de emitir
+  el resultado. La reconciliación comprueba la revisión mostrada antes de
+  registrar una decisión. Ver [CLI](../../README.md#cli).
 
 ## Evidencia y pendientes
 

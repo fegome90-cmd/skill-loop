@@ -83,6 +83,9 @@ Una CLI en Python estándar que **lanza y controla al agente** (Pi primero) y lo
 
 Por paso: `ready → prepared → accepted → settled → done`; además `blocked` y `complete`.
 
+Desde la Fase 4, grilling puede volver a `awaiting` entre turnos. Ver §5.11
+para el contrato vigente por turno y sus reglas de recuperación.
+
 - **prepared:** recibo persistido *antes* de enviar el prompt (guarda cursor `leafId`, SHA del prompt).
 - **accepted:** Pi respondió `disposition=started`.
 - **settled:** se observó `stop` + `agent_settled(aborted=false)` + coincidencia con la rama activa; guarda SHA de la respuesta.
@@ -95,9 +98,9 @@ Por paso: `ready → prepared → accepted → settled → done`; además `block
 2. Mostrar cada respuesta del agente en consola; el usuario responde; repetir (rondas libres, Matt es dueño del árbol).
 3. El usuario escribe `:listo` → la app pide a la skill su síntesis de entendimiento compartido en un bloque ```json que cumpla el contrato del paso.
 4. La app muestra la síntesis y pregunta `¿Confirmas? [s/n]`. `n` → vuelve a rondas. `s` → recibo `done` con el ID del evento de confirmación de consola.
-5. Las respuestas humanas no se guardan en recibos (solo su SHA); el texto vive en el historial de Pi.
-
-*(El token `:listo` y el formato de la síntesis son decisión de diseño revisable en la Fase 4.)*
+5. El recibo guarda solo el SHA de la respuesta humana; el texto enviado
+   queda en el historial de Pi. Para citas del agente y retención de trazas,
+   ver el contrato aprobado de la Fase 4 (§5.11).
 
 ### 5.4 Pasos posteriores
 
@@ -122,10 +125,13 @@ class Host(Protocol):
 
 ```
 ~/.local/state/skillrun/<run_id>/
-  state.json   lock   skills/<copias fijadas>   pi-session/   traces/<step_id>-<intento>.jsonl
+  state.json   lock   skills/<copias fijadas>   pi-session/   traces/<step_id>-<intento>-<turn>.json
 ```
 
 ### 5.7 CLI
+
+La Fase 5 conecta estos subcomandos al motor. Para los campos de salida,
+los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
 
 - `skillrun run <plugin.json> --goal "..." --cwd <repo> --run-id <id>`
 - `skillrun status --run-id <id>`
@@ -141,7 +147,7 @@ class Host(Protocol):
 - Errores: todos, en orden determinista, con ruta JSON (`steps[1].skill: …`).
 - Exit: `0` válido · `10` inválido (BLOCKED) · `70` INTERNAL · `2` uso. stdout solo JSON `{ok, plugin_id, digest}` / `{ok: false, errors}`; texto humano a stderr.
 - `plugin_digest()`: SHA-256 del JSON canónico. `check_result()`: claves exactas y tipo exacto (`bool` ≠ `integer`).
-- Pin de `grilling` (`d2f09a18…` aquí vs `8ca78c6d…` vendorizado v1.3): no se toca; se decide en la Fase 6.
+- Pin de `grilling` (`d2f09a18…` aquí vs `8ca78c6d…` vendorizado v1.3): resuelto en la Fase 6, se fija el original.
 
 ### 5.9 Contrato aprobado de la Fase 2
 
@@ -214,6 +220,35 @@ class Host(Protocol):
   código distinto de cero o un error de protocolo registrado.
 - Detalle y evidencia: [registro de Fase 3](odd/tasks/phase-3-pi-rpc.md).
 
+### 5.11 Contrato aprobado de la Fase 4 (grilling 2026-11-21)
+
+- `run_plugin()` recibe `workspace: Path` (obligatorio). `Console` suma
+  `show`, `notice` y `ask`; `confirm` no cambia. Ctrl-C o EOF de consola →
+  `130` sin tocar el estado si no hay turno en vuelo. Un `EOFError` fuera
+  de la consola es un error interno (`70`).
+- Cada turno del agente tiene número `turn`. Recibo
+  `<run_id>/<step_id>/<intento>/<turn>` y traza
+  `traces/<step_id>-<intento>-<turn>.json` en todos los pasos. Se conservan
+  hasta dos trazas: el último turno mostrado y el actual. Al completar
+  el run se retienen las del último paso para la salida de la Fase 5.
+  La traza privada guarda el texto del agente, incluidas posibles citas
+  de la respuesta humana.
+- Grilling: `/skill:grilling <goal>` → mostrar → estado `awaiting` → la
+  respuesta humana se envía literal (vacía se vuelve a pedir) y solo se guarda
+  su SHA. `:listo` pide la síntesis JSON con el contrato del paso. Síntesis
+  inválida o `n` → vuelve a rondas. `s` → `done` con `event_id`. Rondas libres.
+- Relanzar en `awaiting` re-muestra la última respuesta verificada y pregunta.
+  `reconcile retry` de una ronda o síntesis incierta vuelve a `awaiting`.
+- Snapshot SHA-256 del contenido de todo el árbol (incluido `.git`, sin
+  exclusiones, symlinks por `readlink`) antes y después de **cada turno**.
+  Una raíz symlink se rechaza antes de iniciar el host; un archivo especial
+  o ilegible bloquea antes del envío. Si falla un turno en vuelo o el
+  relanzamiento encuentra un recibo `prepared` o `accepted`, se compara el
+  workspace con el digest guardado. Un cambio o error de snapshot bloquea
+  sin reconciliación; un digest igual conserva la recuperación por incertidumbre.
+- `TerminalConsole` (stdlib): texto a stderr, entrada por stdin.
+- Detalle: [registro de Fase 4](odd/tasks/phase-4-grilling.md).
+
 ## 6. Fases
 
 Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de código a escribir/leer (≈ 10–15 k tokens por cada 100 líneas de código+tests, más lectura de referencias).
@@ -223,15 +258,15 @@ Formato: una fase por hilo. Tokens = rango aproximado estimado por tamaño de c�
 | 1 | Repo + esquema de plugin | `skillrun validate` acepta/rechaza plugins de ejemplo; tests verdes | 30–50 k | no medido (orquestador, worker y tester) | Opus 5.5 orq. + Codex gpt-6.2-sol (worker high, tester xhigh) | hecho (2026-11-20) |
 | 2 | Máquina de estados + recibos + lock | Run completo con host falso; tests de crash en cada etapa | 50–80 k | no medido por rol | Opus 5.5 / medio (arranque), Codex `gpt-6.2-sol` / `xhigh` (orquestación), `high` (WORKER), `xhigh` (TESTER) | hecho (2026-11-20) |
 | 3 | Adaptador Pi RPC + Pi falso con tool turns | Tests de cierre de turno, rama activa, TOCTOU, multi-skill | 60–90 k | no medido por rol | Opus 5.5 / medio (orquestación), Codex `gpt-6.2-sol` / `high` (WORKER), `xhigh` (TESTER y revisión nativa) | hecho (2026-11-21) |
-| 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | — | Sonnet 5.5 / medio | pendiente |
-| 5 | CLI (`run/status/reconcile`), skill de entrada, README | Comandos documentados y probados | 25–40 k | — | Sonnet 5.5 / bajo | pendiente |
-| 6 | Prueba real con Pi + grilling original | Un run real `discovery → github-knowledge` con evidencia guardada | 20–40 k | — | Sonnet 5.5 / medio (el usuario ejecuta Pi) | pendiente |
+| 4 | Fase grilling en consola + pasos posteriores | Flujo grilling→confirmación→paso 2 con fakes | 40–60 k | no medido por rol | Opus 5.5 / medio (orquestación), Codex `gpt-6.2-sol` / `high` (WORKER), `xhigh` (TESTER, verificación y cierre documental) | hecho (2026-11-21) |
+| 5 | CLI (`run/status/reconcile`), skill de entrada, README | Comandos documentados y probados | 25–40 k | no medido por rol | OpenAI Codex `gpt-6.2-sol` / `xhigh` (implementación), `gpt-6.1-sol` / `medium` (verificación independiente) | hecho (2026-11-21) |
+| 6 | Prueba real con Pi + grilling original | Un run real `discovery → github-knowledge` con evidencia guardada | 20–40 k | no medido | Sonnet 5.5 / medio (Pi ejecutado por el agente a pedido del usuario) | ejecutada (2026-11-21), pendiente de confirmación |
 | 7 | (Después) Adaptador Claude Code | Por definir | — | — | — | futuro |
 | 8 | (Después) Adaptador Codex CLI | Por definir | — | — | — | futuro |
 
 Dependencias: cada fase usa lo construido en las anteriores; la 6 requiere Pi 1.4+ instalado y el `SKILL.md` de grilling fijado.
 
-Último cierre: [Fase 3](handoffs/HANDOFF-2026-11-21-PHASE-3.md).
+Último handoff: [Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
 
 ## 7. Estructura del repo
 
@@ -292,7 +327,9 @@ Para hilos siguientes basta la línea `skillrun — Phase <n> of 6: … — STAR
 
 ## 10. Prompt del orquestador
 
-Para el hilo principal de cada fase, con **Opus 5.5 / esfuerzo medio** como orquestador. Este prompt **autoriza** el esquema de subagentes descrito abajo (reemplaza la regla "sin subagentes" del prompt de la sección 9 solo para estos roles).
+La Fase 5 se ejecutó con Codex; ver el [handoff de Fase 5](handoffs/HANDOFF-2026-11-21-PHASE-5.md).
+
+Para los hilos que usen **Opus 5.5 / esfuerzo medio** como orquestador. Este prompt **autoriza** el esquema de subagentes descrito abajo (reemplaza la regla "sin subagentes" del prompt de la sección 9 solo para estos roles).
 
 ```text
 Eres el ORQUESTADOR de skillrun (Opus 5.5, esfuerzo medio). Fase actual: <n> — <nombre>.

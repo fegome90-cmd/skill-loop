@@ -2,15 +2,13 @@
 
 ## Estado
 
-`v0.1.0 — Fase 3 cerrada`. El repositorio `skill-loop` contiene el módulo y CLI
-`skillrun`. La CLI expone `skillrun validate <plugin.json>`. El motor interno
-expone `run_plugin()` y `reconcile()`. El adaptador `PiHost` controla Pi RPC
-como subproceso y está verificado con un Pi falso (`tests/fake_pi.py`).
+`v0.1.0 — Fase 6 ejecutada (pendiente de confirmación)`. El repositorio `skill-loop` contiene el módulo y
+la CLI `skillrun`, con los subcomandos `validate`, `run`, `status` y
+`reconcile`. El contrato de uso está en el [README](README.md#cli).
 
-Para retomar el proyecto, consulta [PLAN.md](PLAN.md) y el
-[handoff de Fase 3](handoffs/HANDOFF-2026-11-21-PHASE-3.md). Las rondas de
-grilling en consola son de la Fase 4. Los subcomandos `run`, `status` y
-`reconcile` corresponden a la Fase 5.
+La Fase 6 se ejecutó con Pi 1.6.0 real: un run `discovery → github-knowledge`
+completó con evidencia. Ver el
+[handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
 
 ## Lectura por intención
 
@@ -95,8 +93,9 @@ docs/agent/           documentos derivados para agentes
 tools/                guard de documentación de agentes
 ```
 
-`.agents/skills/` es contenido vendorizado: no se edita a mano ni se lintea
-(excluido en pre-commit, codespell y markdownlint).
+[La skill de entrada](.agents/skills/skillrun/SKILL.md) dirige a la persona
+usuaria a la CLI. Las otras skills de `.agents/skills/` son vendorizadas y
+no se editan a mano. El directorio se excluye de los hooks de lint.
 
 ## Comandos reales
 
