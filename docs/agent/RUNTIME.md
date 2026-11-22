@@ -38,7 +38,7 @@ Todos se ejecutan desde la raíz del repositorio.
 | YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock` | `Makefile` (`lint-yaml`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | Hooks de Git | `uv run pre-commit install` | `Makefile` (`hooks`) | **No ejecutado**: al cierre de Fase 1 el hook `agent-docs` seguía sin instalar, así que sólo actuó cuando se corrió a mano |
 | Verificar documentos de agente | `uv run --script <kit>/agent_docs_kit.py check <raíz>` | Kit documental | Ejecutado sobre este repositorio |
-| Verificar documentación de agentes (determinista) | `uv run python tools/check_agent_docs.py` | `tools/check_agent_docs.py`, hook `agent-docs` | Ejecutado: código 0; falla si falta un documento, queda un borrador, un enlace local está roto o el contrato cambia sin tocar `docs/agent/` |
+| Verificar documentación de agentes (determinista) | `uv run python tools/check_agent_docs.py` | `tools/check_agent_docs.py`, hook `agent-docs` | Ejecutado: código 0; falla si falta un documento, queda un borrador, un enlace local está roto o una superficie del contrato cambia en el índice sin un cambio preparado en `AGENTS.md` o `docs/agent/` |
 | Regenerar el grafo del mapa | ver "Mapa de código" | Kit documental | Ejecutado con graphify 0.9.26 |
 
 ## Mapa de código (CODEMAP)
@@ -69,6 +69,7 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
   operativo de cada comando se emite como JSON en stdout.
 - `pytest` devuelve 5 cuando no recolecta tests. Ejecuta pytest y `make lint`
   como comprobaciones separadas.
+- `make lint` llama al guard con `--no-coupling` y al hook de Markdown con `--fix`; para una auditoría de solo lectura, no correr ese objetivo sobre el worktree.
 - `make lint` propaga fallos: no hay `|| true`. Un componente fallido provoca
   el fallo del objetivo y debe tratarse, no silenciarse.
 - `agent_docs_kit.py check` valida presencia de los cinco documentos, UTF-8 con

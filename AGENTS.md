@@ -62,10 +62,10 @@ mismo commit; nunca se edita el snapshot a mano.
 7. **Sin secretos** en config, docs, logs ni commits (Ley VIII, Art. 6).
 8. **Higiene** (Ley IV, Art. 7). Sin temporales ni untracked sin propósito.
 9. **Documentación mínima** (Ley VI, Art. 6). Si cambia un contrato, se
-   actualiza su referencia en el mismo commit. El hook `agent-docs` de
-   pre-commit (`tools/check_agent_docs.py`) lo verifica: bloquea el commit si
-   cambia `pyproject.toml`, `Makefile`, `.pre-commit-config.yaml` o el snapshot
-   constitucional sin tocar `AGENTS.md` o `docs/agent/`.
+   actualiza su referencia en el mismo commit. Al ejecutarse, el guard comprueba el acoplamiento
+   por rutas: los cambios preparados en las cinco superficies enumeradas en
+   `CONTRACT_SURFACES` (incluido `SOURCE.lock`) requieren también un cambio
+   preparado en `AGENTS.md` o `docs/agent/`. No valida el contenido de la actualización.
 10. **Nada escribe en GitHub.** Los pasos del agente controlado son solo
     lectura.
 11. **Estado de runs fuera del repo** (`~/.local/state/skillrun/`), permisos

@@ -39,9 +39,10 @@ herramienta que escriba en GitHub.
 
 ## Alcance
 
-Lo verificado está en el [handoff de Fase 4](../../handoffs/HANDOFF-2026-11-21-PHASE-4.md).
-El motor ya admite más de un paso en una misma sesión, pero la CLI solo expone
-`validate`. Las fases siguientes están en PLAN.md §6.
+El motor admite varios pasos en una sesión. La [CLI](../../README.md#cli)
+expone `validate`, `run`, `status` y `reconcile`. El
+[handoff de Fase 6](../../handoffs/HANDOFF-2026-11-21-PHASE-6.md) registra
+la prueba con Pi real y sus límites.
 
 ## Límites
 
