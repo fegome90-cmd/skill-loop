@@ -11,8 +11,12 @@ Fecha: 2026-11-21. Rama local: `feat/phase-3-pi-rpc`, desde `ec042a6`. Estado:
   recibo. El contrato vigente está en [PLAN.md](../PLAN.md) §5.10.
 - `PiHost` implementa `Host` sobre `pi --mode rpc`. Usa una sesión privada por
   run (`--session-dir` y `--session-id`), herramientas de solo lectura,
-  descubrimiento y MCP desactivados, y un entorno sin credenciales de GitHub
-  ni `SSH_AUTH_SOCK`. Verifica el registro de las skills con `get_commands`.
+  descubrimiento y MCP desactivados. En el cierre de la fase, el lanzamiento
+  excluía del entorno heredado `GH_TOKEN`, `GITHUB_TOKEN`,
+  `GH_ENTERPRISE_TOKEN` y `SSH_AUTH_SOCK`. La corrección posterior 5D añade
+  `GITHUB_ENTERPRISE_TOKEN` al mismo filtro. Este filtro por nombre no es un
+  mecanismo de aislamiento de credenciales. El adaptador verifica el
+  registro de las skills con `get_commands`.
 - Cierre de turno estricto: respuesta `started`, `agent_settled` sin aborto,
   último mensaje del asistente con `stop` y pertenencia del turno a la cadena
   `parentId` desde `leafId` hasta el cursor previo. El prompt se escribe una

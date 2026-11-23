@@ -203,8 +203,9 @@ los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
   `--session-dir`/`--session-id` (nunca la última sesión), `--tools
   read,grep,find,ls`, `--no-context-files --no-extensions --no-mcp
   --no-skills --no-prompt-templates` y un `--skill` por copia. Quita
-  `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` y `SSH_AUTH_SOCK` del
-  entorno. El directorio de sesión debe ser propio, `0700` y sin ACL extendida.
+  `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`
+  y `SSH_AUTH_SOCK` del entorno. El directorio de sesión debe ser propio,
+  `0700` y sin ACL extendida.
 - `verify_skills()` relee las copias y exige por `get_commands` exactamente
   `skill:<nombre>` con `sourceInfo.path` igual a la copia.
 - Transporte JSONL estricto: separación solo por LF, UTF-8 y objeto JSON.
@@ -234,9 +235,11 @@ los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
   La traza privada guarda el texto del agente, incluidas posibles citas
   de la respuesta humana.
 - Grilling: `/skill:grilling <goal>` → mostrar → estado `awaiting` → la
-  respuesta humana se envía literal (vacía se vuelve a pedir) y solo se guarda
-  su SHA. `:listo` pide la síntesis JSON con el contrato del paso. Síntesis
-  inválida o `n` → vuelve a rondas. `s` → `done` con `event_id`. Rondas libres.
+  respuesta humana se envía literal (vacía se vuelve a pedir). El recibo guarda
+  solo su SHA-256; el texto del mensaje humano queda en el historial privado
+  de la sesión de Pi (véase §5.3.5). `:listo` pide la síntesis JSON con el
+  contrato del paso. Síntesis inválida o `n` → vuelve a rondas. `s` → `done`
+  con `event_id`. Rondas libres.
 - Relanzar en `awaiting` re-muestra la última respuesta verificada y pregunta.
   Si la rama activa de Pi no alcanza ese turno, el motor bloquea el envío
   y conserva el recibo en `awaiting`.

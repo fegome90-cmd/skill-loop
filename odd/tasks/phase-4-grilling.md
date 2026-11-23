@@ -26,7 +26,8 @@ Delivery is local. No real Pi, no real model calls and no GitHub writes in this 
 - D7. Relaunch while waiting for the human: show the last agent text again from its verified
   trace and ask again. Nothing is resent.
 - D8. `reconcile retry` on an uncertain round or synthesis turn → back to waiting for human input;
-  the human types again. Human text is never stored (only its SHA-256).
+  the human types again. The receipt stores only the SHA-256 of the human answer, not its text.
+  The private Pi session transcript stores the text of the human message (PLAN.md §5.3.5).
 - D9. Each human answer is sent verbatim. Empty or whitespace-only input is asked again without
   sending anything.
 
@@ -157,9 +158,8 @@ fixed in `src/skillrun.py`):
 
 Rejected T6 probes, confirmed by the user (2026-11-21):
 
-- D10. Traces store the agent text verbatim (needed to show it again and to check its SHA). If the
-  agent quotes the human answer, that copy lives in the private trace (`0600` under a `0700` run
-  dir). PLAN.md §5.3.5 ("only the SHA") applies to receipts, not to agent text.
+- D10. Private skillrun traces (`0600` under a `0700` run dir) store the assistant text verbatim
+  for redisplay and SHA verification. That text may include quotes from the human answer.
 - D11. Run completion keeps the traces of the last step: they are the evidence of the final result
   that Phase 5 needs (final JSON and `on_done`). Intermediate steps are still pruned (C2).
 

@@ -39,7 +39,13 @@ if TYPE_CHECKING:
 
 FAKE_PI = Path(__file__).with_name("fake_pi.py").resolve()
 SESSION_ID = "test-session-3"
-DENIED_ENV = {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "SSH_AUTH_SOCK"}
+DENIED_ENV = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "SSH_AUTH_SOCK",
+}
 
 
 class History(Protocol):

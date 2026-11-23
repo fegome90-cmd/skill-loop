@@ -1176,7 +1176,13 @@ class PiHost:
                 for path in self._skills.values():
                     argv.extend(("--skill", str(path)))
                 env = os.environ.copy()
-                for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "SSH_AUTH_SOCK"):
+                for key in (
+                    "GH_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_ENTERPRISE_TOKEN",
+                    "GITHUB_ENTERPRISE_TOKEN",
+                    "SSH_AUTH_SOCK",
+                ):
                     env.pop(key, None)
                 # Pi runs with an explicit argv and no shell.
                 process = subprocess.Popen(  # nosec B603
