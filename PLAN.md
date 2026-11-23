@@ -238,6 +238,8 @@ los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
   su SHA. `:listo` pide la síntesis JSON con el contrato del paso. Síntesis
   inválida o `n` → vuelve a rondas. `s` → `done` con `event_id`. Rondas libres.
 - Relanzar en `awaiting` re-muestra la última respuesta verificada y pregunta.
+  Si la rama activa de Pi no alcanza ese turno, el motor bloquea el envío
+  y conserva el recibo en `awaiting`.
   `reconcile retry` de una ronda o síntesis incierta vuelve a `awaiting`.
 - Snapshot SHA-256 del contenido de todo el árbol (incluido `.git`, sin
   exclusiones, symlinks por `readlink`) antes y después de **cada turno**.

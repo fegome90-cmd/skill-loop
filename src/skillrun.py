@@ -1010,6 +1010,28 @@ def _rpc_object(value: object) -> dict[str, object]:
     return value
 
 
+def _active_branch(history: PiHistory, cursor: str | None) -> list[Mapping[str, object]]:
+    entries: dict[str, Mapping[str, object]] = {}
+    for item in history.entries:
+        entry_id = item.get("id")
+        if not _has_text(entry_id) or entry_id in entries:
+            raise HostError("Invalid Pi history entry id")
+        entries[entry_id] = item
+
+    branch: list[Mapping[str, object]] = []
+    current = history.leaf_id
+    while current != cursor:
+        entry = entries.pop(current, None) if current is not None else None
+        if entry is None or "parentId" not in entry or not isinstance(entry.get("type"), str):
+            raise HostError("Pi active branch does not reach the turn cursor")
+        parent = entry["parentId"]
+        if parent is not None and not _has_text(parent):
+            raise HostError("Invalid Pi history parent id")
+        branch.append(entry)
+        current = parent
+    return branch
+
+
 def _bound_turn(
     history: PiHistory,
     cursor: str | None,
@@ -1019,23 +1041,8 @@ def _bound_turn(
     leaf = history.leaf_id
     if leaf is None or leaf == cursor:
         raise HostError("Pi did not advance the active branch")
-    entries: dict[str, Mapping[str, object]] = {}
-    for item in history.entries:
-        entry_id = item.get("id")
-        if not _has_text(entry_id) or entry_id in entries:
-            raise HostError("Invalid Pi history entry id")
-        entries[entry_id] = item
-
     messages: list[dict[str, object]] = []
-    current: str | None = leaf
-    while current != cursor:
-        entry = entries.pop(current, None) if current is not None else None
-        if entry is None or "parentId" not in entry or not isinstance(entry.get("type"), str):
-            raise HostError("Pi active branch does not reach the turn cursor")
-        parent = entry["parentId"]
-        if parent is not None and not _has_text(parent):
-            raise HostError("Invalid Pi history parent id")
-        current = parent
+    for entry in _active_branch(history, cursor):
         if entry["type"] == "message":
             message = _rpc_object(entry.get("message"))
             role = message.get("role")
@@ -1071,6 +1078,10 @@ def _bound_turn(
 
 class _PiStdoutClosedError(HostError):
     """Pi closed stdout, which is only expected during close()."""
+
+
+class _PiResumeBindingError(HostError):
+    """Pi could not prove continuity with a saved turn before sending a prompt."""
 
 
 class PiHost:
@@ -1383,8 +1394,30 @@ class PiHost:
         on_prepared: Callable[[str | None], None],
         on_accepted: Callable[[], None],
     ) -> Turn:
+        return self._prompt(text, on_prepared, on_accepted)
+
+    def _prompt(
+        self,
+        text: str,
+        on_prepared: Callable[[str | None], None],
+        on_accepted: Callable[[], None],
+        *,
+        resume_leaf: str | None = None,
+    ) -> Turn:
         with self._operation():
-            cursor = self._history(None).leaf_id
+            try:
+                history = self._history(None)
+                if resume_leaf is not None and not any(
+                    entry["id"] == resume_leaf for entry in _active_branch(history, None)
+                ):
+                    raise HostError("Saved turn is not on the active branch")
+            except HostError as exc:
+                if resume_leaf is None:
+                    raise
+                raise _PiResumeBindingError(
+                    "Pi active branch does not reach the saved verified turn"
+                ) from exc
+            cursor = history.leaf_id
             on_prepared(cursor)
             deadline = monotonic() + self._turn_timeout
             data = self._request("prompt", message=text, deadline=deadline)
@@ -1552,7 +1585,13 @@ def _started_host(host: Host, paths: Mapping[str, Path], pins: Mapping[str, str]
 
 
 def _send_turn(
-    store: _RunStore, state: _RunState, host: Host, text: str, workspace: Path
+    store: _RunStore,
+    state: _RunState,
+    host: Host,
+    text: str,
+    workspace: Path,
+    *,
+    resume_leaf: str | None = None,
 ) -> _RunState:
     prompt_sha256 = _sha256_text(text)
     workspace_sha256 = workspace_digest(workspace)
@@ -1585,7 +1624,10 @@ def _send_turn(
         state = store.save(replace(state, status="accepted"))
 
     try:
-        turn = host.prompt(text, on_prepared, on_accepted)
+        if resume_leaf is not None and isinstance(host, PiHost):
+            turn = host._prompt(text, on_prepared, on_accepted, resume_leaf=resume_leaf)
+        else:
+            turn = host.prompt(text, on_prepared, on_accepted)
     finally:
         active = False
     if invalid_callback or state.status != "accepted":
@@ -1722,7 +1764,7 @@ def _advance_run(
                 if last:
                     try:
                         session.close()
-                    except (Exception, KeyboardInterrupt):
+                    except Exception:
                         _block_step(store, state, "Host shutdown failed")
                         raise
                 return store.save(replace(state, status="done", confirmation_event_id=event_id))
@@ -1751,10 +1793,15 @@ def _advance_run(
                         if state.revision == 0:
                             state = store.save(state)
                         store.clear_trace(state)
+                        resume_leaf = None
                         if not started:
                             session.enter_context(_started_host(host, *staged))
                             started = True
-                        state = _send_turn(store, state, host, prompt, workspace)
+                            if state.previous is not None:
+                                resume_leaf = state.previous.leaf_id
+                        state = _send_turn(
+                            store, state, host, prompt, workspace, resume_leaf=resume_leaf
+                        )
                     target = state.settled_turn()
                     try:
                         text = store.read_trace(state, target)
@@ -1808,6 +1855,9 @@ def _advance_run(
         store.save(replace(state, status="complete"))
         return outcome
     except _SkillCopyError as exc:
+        return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
+    except _PiResumeBindingError as exc:
+        # No prompt was prepared; keep the awaiting receipt for retry after repair.
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
     except WorkspaceSnapshotError as exc:
         current = store.load()

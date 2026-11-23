@@ -565,6 +565,81 @@ def test_run_plugin_pin_mismatch_never_spawns_pi(tmp_path: Path, pi_process: PiP
     assert pi_process.commands() == []
 
 
+@pytest.mark.parametrize(
+    ("history", "answer"),
+    [("missing", "Keep the original scope."), ("off-branch", ":listo")],
+)
+def test_run_plugin_refuses_to_resume_awaiting_without_verified_pi_branch(
+    tmp_path: Path, pi_process: PiProcess, history: str, answer: str
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    paused = run.invoke(pi_process.host(replies=(OPENING,)), FakeConsole(answers=(EOFError(),)))
+    assert (paused.status, paused.exit_code, run.state()["status"]) == (
+        "cancelled",
+        130,
+        "awaiting",
+    )
+    receipt = run.state_path.read_bytes()
+    trace = run.trace_path().read_bytes()
+    transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+    if history == "missing":
+        transcript.unlink()
+    else:
+        append_record(transcript, {"type": "session_info", "id": "ffffffff", "parentId": None})
+
+    console = FakeConsole(answers=(answer, ":listo"))
+    resumed = run.invoke(pi_process.host(replies=(DISCOVERY, DISCOVERY)), console)
+
+    assert (resumed.status, resumed.exit_code, resumed.step_id) == ("blocked", 10, "discovery")
+    assert resumed.reason == "Pi active branch does not reach the saved verified turn"
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}"
+    ]
+    assert console.shown == [("discovery", OPENING)]
+    assert console.confirmations == []
+    assert run.state_path.read_bytes() == receipt
+    assert run.trace_path().read_bytes() == trace
+    assert not run.trace_path(turn=2).exists()
+    assert_reaped(pi_process)
+
+
+@pytest.mark.parametrize("descendant", [False, True], ids=["exact-leaf", "descendant"])
+def test_run_plugin_resumes_awaiting_on_verified_pi_branch(
+    tmp_path: Path, pi_process: PiProcess, descendant: bool
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    paused = run.invoke(pi_process.host(replies=(OPENING,)), FakeConsole(answers=(EOFError(),)))
+    assert (paused.status, paused.exit_code, run.state()["status"]) == (
+        "cancelled",
+        130,
+        "awaiting",
+    )
+    if descendant:
+        transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+        append_record(
+            transcript,
+            {
+                "type": "session_info",
+                "id": "ffffffff",
+                "parentId": run.state()["previous"]["leaf_id"],
+            },
+        )
+
+    answer = "  Keep the original scope.  "
+    round_reply = "What evidence should be collected?"
+    console = FakeConsole(answers=(answer, ":listo"))
+    resumed = run.invoke(pi_process.host(replies=(round_reply, DISCOVERY)), console)
+
+    assert (resumed.status, resumed.exit_code, run.state()["status"]) == ("complete", 0, "complete")
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}",
+        answer,
+        SYNTHESIS_PREFIX + '{"summary": "string"}',
+    ]
+    assert console.shown == [("discovery", text) for text in (OPENING, round_reply, DISCOVERY)]
+    assert_reaped(pi_process)
+
+
 def test_run_plugin_detects_source_change_after_copy_before_spawning_pi(
     tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
 ) -> None:

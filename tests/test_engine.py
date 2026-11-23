@@ -267,18 +267,27 @@ def test_host_close_failure_persists_a_blocked_run(tmp_path: Path) -> None:
     assert host.events == []
 
 
-def test_interrupt_during_host_close_blocks_replay(tmp_path: Path) -> None:
+def test_interrupt_during_host_close_resumes_the_settled_turn(tmp_path: Path) -> None:
+    run = RunFiles(tmp_path)
+    before_close = b""
+
     class InterruptedClose(FakeHost):
         def close(self) -> None:
+            nonlocal before_close
+            before_close = run.state_path.read_bytes()
             raise KeyboardInterrupt
 
-    run = RunFiles(tmp_path)
-    assert run.invoke(InterruptedClose(OPENING, DISCOVERY)).exit_code == 130
-    assert run.state()["status"] == "blocked"
+    interrupted = run.invoke(InterruptedClose(OPENING, DISCOVERY))
+    assert (interrupted.status, interrupted.exit_code) == ("cancelled", 130)
+    assert run.state()["status"] == "settled"
+    assert run.state_path.read_bytes() == before_close
 
     host = FakeHost()
-    assert run.invoke(host).exit_code == 10
+    finished = run.invoke(host)
+    assert (finished.status, finished.exit_code) == ("complete", 0)
+    assert finished.result == {"summary": "Agreed scope"}
     assert host.events == []
+    assert run.state()["status"] == "complete"
 
 
 def timeout_after_acceptance(stage: str, _prompt: str) -> None:
