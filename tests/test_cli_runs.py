@@ -62,7 +62,7 @@ class CLI:
             "--goal",
             GOAL,
             "--cwd",
-            self.run.workspace.name,
+            str(self.run.workspace.relative_to(self.root)),
             *STATE_ARGS,
             answer=answer,
         )
@@ -114,6 +114,30 @@ def test_run_prints_only_final_validated_json_and_replays_without_pi(tmp_path: P
     (cli.bin / "pi").unlink()
     assert response(cli.run_plugin(), 0) == data
     assert cli.log.read_bytes() == log
+
+
+def test_legacy_transcript_mode_reports_manual_recovery_and_preserves_resume(
+    tmp_path: Path,
+) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi("--reply", OPENING)
+    assert response(cli.run_plugin(), 130)["status"] == "cancelled"
+    transcript = cli.directory / "pi-session" / f"{RUN_ID}.jsonl"
+    transcript.chmod(0o644)  # Simulate a transcript created by an older release.
+    receipt = cli.directory / "state.json"
+    before = (receipt.read_bytes(), transcript.read_bytes(), cli.log.read_bytes())
+
+    blocked = cli.run_plugin(answer="answer\n")
+    reason = response(blocked, 10)["reason"]
+    assert str(transcript) in reason
+    assert "0644" in reason and "0600" in reason and "manually" in reason
+    assert reason in blocked.stderr
+    assert transcript.stat().st_mode & 0o777 == 0o644
+    assert (receipt.read_bytes(), transcript.read_bytes(), cli.log.read_bytes()) == before
+
+    transcript.chmod(0o600)  # The operator, not skillrun, performs the repair.
+    cli.fake_pi("--reply", DISCOVERY)
+    assert response(cli.run_plugin(answer=":listo\ns\n"), 0)["status"] == "complete"
 
 
 def test_status_reads_the_saved_checkpoint_without_touching_pi_or_state(tmp_path: Path) -> None:
@@ -232,6 +256,25 @@ def test_run_never_returns_a_result_from_an_unbound_trace(tmp_path: Path, tamper
     assert (cli.directory / "state.json").read_bytes() == before
 
 
+def test_run_with_missing_workspace_preserves_cli_error_without_writing(tmp_path: Path) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi()
+    cli.run.workspace.rmdir()
+
+    result = cli.run_plugin()
+
+    assert response(result, 10) == {
+        "run_id": RUN_ID,
+        "status": "blocked",
+        "exit_code": 10,
+        "step_id": None,
+        "reason": "Unable to use run storage",
+    }
+    assert result.stderr == "skillrun: Unable to use run storage\n"
+    assert not Path(cli.env["XDG_STATE_HOME"]).exists()
+    assert not cli.log.exists()
+
+
 @pytest.mark.parametrize("case_alias", [False, True])
 def test_run_rejects_state_storage_inside_the_workspace(tmp_path: Path, case_alias: bool) -> None:
     cli = CLI(tmp_path, RunFiles(tmp_path))
@@ -245,6 +288,30 @@ def test_run_rejects_state_storage_inside_the_workspace(tmp_path: Path, case_ali
     assert response(cli.run_plugin(), 10)["status"] == "blocked"
     assert not cli.log.exists()
     assert list(cli.run.workspace.iterdir()) == []
+
+
+@pytest.mark.parametrize("inside_checkout", [False, True])
+def test_run_from_nested_worktree_keeps_storage_outside_checkout(
+    tmp_path: Path, inside_checkout: bool
+) -> None:
+    checkout = tmp_path / "checkout"
+    workspace = checkout / "src"
+    workspace.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: ../metadata\n", encoding="utf-8")
+    cli = CLI(tmp_path, RunFiles(tmp_path, workspace=workspace))
+    cli.fake_pi("--reply", OPENING, "--reply", DISCOVERY)
+    xdg = (checkout if inside_checkout else tmp_path) / "xdg"
+    cli.env["XDG_STATE_HOME"] = str(xdg)
+
+    completed = cli.run_plugin(answer=":listo\ns\n")
+
+    if inside_checkout:
+        assert response(completed, 10)["status"] == "blocked"
+        assert not xdg.exists()
+        assert not cli.log.exists()
+    else:
+        assert response(completed, 0)["status"] == "complete"
+        assert (xdg / "skillrun" / RUN_ID / "state.json").is_file()
 
 
 def test_reconcile_does_not_apply_approval_to_a_new_receipt(

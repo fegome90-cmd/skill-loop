@@ -186,6 +186,7 @@ def test_launch_passes_exact_rpc_flags_and_sanitizes_environment(
     previous_umask = os.umask(0)
     try:
         host.start(pi_process.skills)
+        assert os.umask(0) == 0
     finally:
         os.umask(previous_umask)
 
@@ -195,6 +196,8 @@ def test_launch_passes_exact_rpc_flags_and_sanitizes_environment(
     assert DENIED_ENV.isdisjoint(spawn["env_keys"])
     assert "SKILLRUN_TEST_SENTINEL" in spawn["env_keys"]
     assert S_IMODE(pi_process.session_dir.stat().st_mode) == 0o700
+    transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+    assert S_IMODE(transcript.stat().st_mode) == 0o600
     assert spawn["argv"] == [
         *pi_process.prefix("plain")[2:],
         "--mode",
@@ -252,6 +255,27 @@ def test_unsafe_session_dir_never_spawns(pi_process: PiProcess, defect: str) -> 
     with pytest.raises(skillrun.HostError):
         pi_process.host().start(pi_process.skills)
     assert pi_process.spawns() == []
+
+
+@pytest.mark.parametrize("defect", ["mode", "symlink", "directory"])
+def test_unsafe_session_transcript_never_spawns(pi_process: PiProcess, defect: str) -> None:
+    directory = pi_process.session_dir
+    directory.mkdir(mode=0o700)
+    transcript = directory / f"{SESSION_ID}.jsonl"
+    if defect == "mode":
+        transcript.write_text("{}\n", encoding="utf-8")
+        transcript.chmod(0o644)
+    elif defect == "symlink":
+        transcript.symlink_to(pi_process.skills["zeta"])
+    else:
+        transcript.mkdir(mode=0o700)
+    before = transcript.lstat()
+
+    with pytest.raises(skillrun.HostError):
+        pi_process.host().start(pi_process.skills)
+
+    assert pi_process.spawns() == []
+    assert transcript.lstat() == before
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Checks macOS extended ACLs")

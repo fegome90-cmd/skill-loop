@@ -156,6 +156,78 @@ def test_invalid_workspace_blocks_before_touching_host(tmp_path: Path, defect: s
     assert host.events == []
 
 
+@pytest.mark.parametrize("location", ["workspace", "checkout", "checkout-alias", "outside"])
+def test_run_keeps_storage_outside_workspace_and_checkout(tmp_path: Path, location: str) -> None:
+    checkout = tmp_path / "checkout"
+    workspace = checkout / "src"
+    workspace.mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    alias = tmp_path / "checkout-alias"
+    alias.symlink_to(checkout, target_is_directory=True)
+    run = RunFiles(tmp_path, workspace=workspace)
+    host = FakeHost(OPENING, DISCOVERY)
+    state_root = (
+        {
+            "workspace": workspace,
+            "checkout": checkout,
+            "checkout-alias": alias,
+            "outside": tmp_path,
+        }[location]
+        / "new"
+        / "state"
+    )
+
+    outcome = skillrun.run_plugin(
+        skillrun.load_plugin(run.plugin_path),
+        goal=GOAL,
+        run_id=RUN_ID,
+        host=host,
+        console=FakeConsole(),
+        workspace=workspace,
+        state_root=state_root,
+    )
+
+    if location == "outside":
+        assert (outcome.status, outcome.exit_code) == ("complete", 0)
+        assert (state_root / RUN_ID / "state.json").is_file()
+    else:
+        assert (outcome.status, outcome.exit_code) == ("blocked", 10)
+        assert host.events == []
+        assert not state_root.parent.exists()
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["workspace", "enclosing-checkout"])
+def test_run_directory_cannot_collide_with_workspace_or_checkout(
+    tmp_path: Path, nested: bool
+) -> None:
+    state_root = tmp_path / "private"
+    state_root.mkdir(mode=0o700)
+    run_dir = state_root / RUN_ID
+    run_dir.mkdir(mode=0o700)
+    workspace = run_dir
+    if nested:
+        (run_dir / ".git").mkdir()
+        workspace = run_dir / "src"
+        workspace.mkdir()
+    run = RunFiles(tmp_path, workspace=workspace)
+    host = FakeHost(OPENING, DISCOVERY)
+    before = set(run_dir.iterdir())
+
+    outcome = skillrun.run_plugin(
+        skillrun.load_plugin(run.plugin_path),
+        goal=GOAL,
+        run_id=RUN_ID,
+        host=host,
+        console=FakeConsole(),
+        workspace=workspace,
+        state_root=state_root,
+    )
+
+    assert (outcome.status, outcome.exit_code) == ("blocked", 10)
+    assert host.events == []
+    assert set(run_dir.iterdir()) == before
+
+
 def test_special_file_blocks_before_sending_or_preparing_a_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

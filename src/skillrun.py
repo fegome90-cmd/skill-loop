@@ -379,6 +379,10 @@ class _StateError(Exception):
     """The run or its persisted evidence is missing, unsafe, or invalid."""
 
 
+class _RunStorageConflictError(_StateError):
+    """Managed run storage would overlap the workspace or its checkout."""
+
+
 class _ConsoleClosedError(Exception):
     """The human console reached end of input."""
 
@@ -937,33 +941,66 @@ class _RunStore:
             return text
 
 
+def _resolved_run_directory(run_dir: Path) -> Path:
+    if not re.fullmatch(_ID_PATTERN, run_dir.name) or ".." in run_dir.parts:
+        raise _StateError("Invalid run path")
+    with _storage_errors():
+        state_root = run_dir.absolute().parent
+        if not state_root.name:
+            raise _StateError("Invalid state root")
+        # Resolve aliases above managed storage without following the state root itself.
+        try:
+            storage_parent = state_root.parent.resolve()
+        except RuntimeError as exc:
+            raise _StateError("Unable to resolve the state root parent") from exc
+    return storage_parent / state_root.name / run_dir.name
+
+
+def _require_external_run_storage(run_dir: Path, workspace: Path) -> None:
+    try:
+        workspace = workspace.resolve(strict=True)
+    except RuntimeError as exc:
+        raise _StateError("Unable to resolve the workspace") from exc
+    storage_ancestors = []
+    for directory in (run_dir, *run_dir.parents):
+        with suppress(FileNotFoundError):
+            storage_ancestors.append(directory.lstat())
+
+    def contains(info: os.stat_result) -> bool:
+        # Compare filesystem identity, not spelling on case-insensitive volumes.
+        return any(os.path.samestat(info, ancestor) for ancestor in storage_ancestors)
+
+    if contains(workspace.stat()):
+        raise _RunStorageConflictError("Run storage must be outside the workspace")
+    for parent in workspace.parents:
+        if contains(parent.stat()):
+            with suppress(FileNotFoundError):
+                # A linked worktree or submodule may have a .git file, not a directory.
+                (parent / ".git").lstat()
+                raise _RunStorageConflictError("Run storage must be outside the enclosing checkout")
+
+
 @contextmanager
-def _locked_run(run_dir: Path, *, create: bool) -> Iterator[_RunStore]:
+def _locked_run(
+    run_dir: Path, *, create: bool, workspace: Path | None = None
+) -> Iterator[_RunStore]:
     try:
         import fcntl
     except ImportError as exc:
         raise _StateError("Run storage requires POSIX file locking") from exc
-    if not re.fullmatch(_ID_PATTERN, run_dir.name) or ".." in run_dir.parts:
-        raise _StateError("Invalid run path")
+    run_dir = _resolved_run_directory(run_dir)
     with ExitStack() as opened:
         with _storage_errors():
-            absolute = run_dir.absolute()
-            state_root = absolute.parent
-            if not state_root.name:
-                raise _StateError("Invalid state root")
-            # Resolve aliases above managed storage without following the state root itself.
-            try:
-                storage_parent = state_root.parent.resolve()
-            except RuntimeError as exc:
-                raise _StateError("Unable to resolve the state root parent") from exc
-            root, *parents = (storage_parent / state_root.name).parts
+            if workspace is not None:
+                _require_external_run_storage(run_dir, workspace)
+            root, *parents = run_dir.parent.parts
             parent_fd = _open_directory(None, root, create=False)
             opened.callback(os.close, parent_fd)
             for part in parents:
                 parent_fd = _open_directory(parent_fd, part, create=create)
                 opened.callback(os.close, parent_fd)
             _check_open_private(parent_fd, "state root", directory=True)
-            run_fd = _open_directory(parent_fd, absolute.name, create=create)
+            run_fd = _open_directory(parent_fd, run_dir.name, create=create)
             opened.callback(os.close, run_fd)
             _check_open_private(run_fd, "run directory", directory=True)
 
@@ -984,7 +1021,7 @@ def _locked_run(run_dir: Path, *, create: bool) -> Iterator[_RunStore]:
                     raise _RunBusy("Run lock is held") from exc
                 raise
             _check_entry(run_fd, "state.json")
-        store = _RunStore(run_fd, storage_parent / state_root.name / absolute.name)
+        store = _RunStore(run_fd, run_dir)
         try:
             yield store
         finally:
@@ -1084,6 +1121,10 @@ class _PiResumeBindingError(HostError):
     """Pi could not prove continuity with a saved turn before sending a prompt."""
 
 
+class _PiLegacyTranscriptModeError(HostError):
+    """A legacy transcript requires manual repair before Pi can start."""
+
+
 class PiHost:
     """Drive one Pi RPC child and verify turns against its active session branch."""
 
@@ -1135,6 +1176,37 @@ class PiHost:
         except (OSError, RuntimeError, ValueError) as exc:
             raise HostError("Unable to resolve a Pi path") from exc
 
+    def _check_session_storage(self) -> None:
+        try:
+            session_fd = _open_directory(None, str(self._session_dir), create=False)
+            try:
+                _check_open_private(session_fd, "Pi session directory", directory=True)
+                # Pi selects an existing session from the JSONL files in this directory.
+                for name in os.listdir(session_fd):
+                    if not name.endswith(".jsonl"):
+                        continue
+                    info = os.stat(name, dir_fd=session_fd, follow_symlinks=False)
+                    if (
+                        info.st_mode == stat.S_IFREG | 0o644
+                        and info.st_nlink == 1
+                        and info.st_uid == os.geteuid()
+                    ):
+                        path = ascii(str(self._session_dir / name))
+                        raise _PiLegacyTranscriptModeError(
+                            f"Pi transcript {path} has mode 0644; manually set this file to "
+                            "0600, then rerun with the same arguments."
+                        )
+                    _check_private(info, name, directory=False)
+                    fd = os.open(name, os.O_RDONLY | _file_flags(), dir_fd=session_fd)
+                    try:
+                        _check_open_private(fd, name)
+                    finally:
+                        os.close(fd)
+            finally:
+                os.close(session_fd)
+        except (OSError, _StateError) as exc:
+            raise HostError("Unsafe Pi session storage") from exc
+
     def start(self, skills: Mapping[str, Path]) -> None:
         with self._operation():
             if self._dead or self._process is not None:
@@ -1143,15 +1215,7 @@ class PiHost:
                 raise HostError("Invalid Pi session id")
             try:
                 self._session_dir.mkdir(mode=0o700, exist_ok=True)
-                session_fd = os.open(
-                    self._session_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                )
-                try:
-                    _check_open_private(session_fd, "Pi session directory", directory=True)
-                except _StateError as exc:
-                    raise HostError("Unsafe Pi session directory") from exc
-                finally:
-                    os.close(session_fd)
+                self._check_session_storage()
                 session_root = self._resolved_path(str(self._session_dir.parent))
                 session_root /= self._session_dir.name
                 if not self._command:
@@ -1192,6 +1256,7 @@ class PiHost:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     bufsize=0,
+                    umask=0o077,
                 )
                 self._process = process
                 assert process.stdin is not None and process.stdout is not None
@@ -1529,11 +1594,13 @@ def _step_result(step: Step, text: str) -> Mapping[str, object] | None:
         result: object = json.loads(
             last_block, object_pairs_hook=_unique_object, parse_constant=_reject_json_constant
         )
+        if not isinstance(result, dict) or check_result(step.result, result):
+            return None
+        # A valid numeric literal can still overflow to infinity during decoding.
+        json.dumps(result, allow_nan=False)
     except (ValueError, RecursionError):
         return None
-    if isinstance(result, dict) and not check_result(step.result, result):
-        return result
-    return None
+    return result
 
 
 def _prompt_text(step: Step, goal: str) -> str:
@@ -1728,7 +1795,6 @@ def _completed_outcome(store: _RunStore, state: _RunState, step: Step) -> RunOut
         text = store.read_trace(state, state.settled_turn())
         result = _step_result(step, text)
         if result is not None:
-            json.dumps(dict(result), allow_nan=False)
             return RunOutcome("complete", EXIT_DONE, step.id, result=result)
     except (_StateError, ValueError, RecursionError):
         pass
@@ -1862,8 +1928,8 @@ def _advance_run(
         return outcome
     except _SkillCopyError as exc:
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
-    except _PiResumeBindingError as exc:
-        # No prompt was prepared; keep the awaiting receipt for retry after repair.
+    except (_PiResumeBindingError, _PiLegacyTranscriptModeError) as exc:
+        # No prompt was prepared; preserve the checkpoint for retry after repair.
         return RunOutcome("blocked", EXIT_BLOCKED, step.id, str(exc))
     except WorkspaceSnapshotError as exc:
         current = store.load()
@@ -1912,7 +1978,9 @@ def run_plugin(
                 "blocked", EXIT_BLOCKED, plugin.steps[0].id, "Workspace snapshot failed"
             )
         goal_sha256 = _sha256_text(goal)
-        with _locked_run(_run_directory(state_root, run_id), create=True) as store:
+        with _locked_run(
+            _run_directory(state_root, run_id), create=True, workspace=workspace
+        ) as store:
             state = store.load()
             if state is None:
                 state = _RunState(run_id, plugin.digest, goal_sha256, plugin.steps[0].id)
@@ -1921,6 +1989,8 @@ def run_plugin(
             return _advance_run(store, state, plugin, goal, host, console, workspace)
     except _RunBusy:
         return RunOutcome("not_ready", EXIT_NOT_READY, reason="Run lock is held")
+    except _RunStorageConflictError as exc:
+        return RunOutcome("blocked", EXIT_BLOCKED, reason=str(exc))
     except (_StateError, UnicodeEncodeError):
         return RunOutcome("blocked", EXIT_BLOCKED, reason="Invalid run input or storage")
     except KeyboardInterrupt:
@@ -2001,18 +2071,10 @@ def _run_cli(args: argparse.Namespace) -> int:
             errors=list(exc.errors),
         )
     workspace = Path(args.cwd).absolute()
+    run_dir = _resolved_run_directory(_run_directory(None, args.run_id))
     with _storage_errors():
-        run_dir = _run_directory(None, args.run_id)
-        try:
-            state_root = run_dir.parent.resolve()
-        except RuntimeError as exc:
-            raise _StateError("Unable to resolve the state directory") from exc
-        workspace_info = workspace.stat()
-        for directory in (state_root, *state_root.parents):
-            # Compare filesystem identity, not spelling on case-insensitive volumes.
-            with suppress(FileNotFoundError):
-                if os.path.samestat(workspace_info, directory.stat()):
-                    raise _StateError("Run storage must be outside the workspace")
+        # Preserve the CLI error for a workspace that cannot be statted.
+        workspace.stat()
     outcome = run_plugin(
         plugin,
         goal=args.goal,

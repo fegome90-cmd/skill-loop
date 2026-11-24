@@ -232,6 +232,59 @@ def test_invalid_synthesis_notifies_and_returns_to_rounds(tmp_path: Path, respon
     assert run.state()["status"] == "awaiting"
 
 
+@pytest.mark.parametrize("stage", ["synthesis", "ordinary"])
+@pytest.mark.parametrize("finite", [True, False], ids=["finite", "overflow"])
+def test_nested_number_must_be_representable_before_advancing(
+    tmp_path: Path, stage: str, finite: bool
+) -> None:
+    run = RunFiles(tmp_path, "complete")
+    nested = '[{"weight": ' + ("1.5e2" if finite else "1e999") + "}]"
+    synthesis = (
+        MULTI_STEP_DISCOVERY.replace("[]", nested) if stage == "synthesis" else MULTI_STEP_DISCOVERY
+    )
+    investigation = (
+        INVESTIGATION.replace("{}", '{"items": ' + nested + "}")
+        if stage == "ordinary"
+        else INVESTIGATION
+    )
+    host = FakeHost(OPENING, synthesis, investigation, SUMMARY)
+    console = FakeConsole(answers=(":listo", EOFError()))
+
+    outcome = run.invoke(host, console)
+
+    if finite:
+        assert (outcome.status, outcome.exit_code, outcome.result) == (
+            "complete",
+            0,
+            {"verified": True},
+        )
+        assert len(host.sent) == 4
+        assert run.state()["status"] == "complete"
+        if stage == "synthesis":
+            assert console.confirmations == [
+                ("discovery", {"summary": "Agreed scope", "decisions": [{"weight": 150.0}]})
+            ]
+    elif stage == "synthesis":
+        assert (outcome.status, outcome.exit_code, outcome.step_id) == (
+            "cancelled",
+            130,
+            "discovery",
+        )
+        assert run.state()["status"] == "awaiting"
+        assert console.confirmations == []
+        assert console.notices == [("discovery", "Synthesis does not match the step contract")]
+        assert len(host.sent) == 2
+    else:
+        assert (outcome.status, outcome.exit_code, outcome.step_id) == (
+            "blocked",
+            10,
+            "investigate",
+        )
+        assert outcome.reason == "Result does not match the step contract"
+        assert (run.state()["status"], run.state()["step_id"]) == ("blocked", "investigate")
+        assert len(host.sent) == 3
+
+
 def test_declined_confirmation_returns_to_rounds_without_reconciliation(tmp_path: Path) -> None:
     run = RunFiles(tmp_path, "complete")
     host = FakeHost(OPENING, MULTI_STEP_DISCOVERY)
