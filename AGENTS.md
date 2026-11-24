@@ -2,14 +2,13 @@
 
 ## Estado
 
-`v0.1.0 — Fase 1 cerrada` (esquema de plugin + `skillrun validate`). Repositorio `skill-loop`; producto, CLI y módulo
-`skillrun`. CLI que lanza y controla un agente (Pi RPC primero) para ejecutar las
-skills de un plugin **en orden**, con `grilling` como paso 1 obligatorio. Plan,
-decisiones y fases: [PLAN.md](PLAN.md).
+`v0.1.0 — Fase 6 cerrada`. El repositorio `skill-loop` contiene el módulo y
+la CLI `skillrun`, con los subcomandos `validate`, `run`, `status` y
+`reconcile`. El contrato de uso está en el [README](README.md#cli).
 
-Solo existe lo que la fase cerrada más reciente declara en su handoff
-(`handoffs/`). No afirmes que `skillrun run`, `status` o `reconcile` existen
-antes de su fase. Hoy existe solo `skillrun validate <plugin.json>`.
+La prueba con Pi real completó el flujo `discovery → github-knowledge`.
+El [handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md) distingue
+las corridas y sus límites de verificación.
 
 ## Lectura por intención
 
@@ -44,8 +43,8 @@ mismo commit; nunca se edita el snapshot a mano.
   `src/skillrun.py`; console script `skillrun = "skillrun:main"`.
 - Dev: Ruff, mypy estricto, pytest, Bandit, codespell, yamllint,
   markdownlint-cli2, shellcheck y pre-commit.
-- skillrun no llama a red ni a LLMs por sí mismo; lanza al host agente (Pi)
-  como subproceso y lo controla.
+- El motor delega las operaciones del agente a la interfaz `Host`. `PiHost`
+  inicia y controla Pi 1.6 en modo RPC (PLAN.md §5.10).
 
 ## Reglas duras
 
@@ -63,10 +62,10 @@ mismo commit; nunca se edita el snapshot a mano.
 7. **Sin secretos** en config, docs, logs ni commits (Ley VIII, Art. 6).
 8. **Higiene** (Ley IV, Art. 7). Sin temporales ni untracked sin propósito.
 9. **Documentación mínima** (Ley VI, Art. 6). Si cambia un contrato, se
-   actualiza su referencia en el mismo commit. El hook `agent-docs` de
-   pre-commit (`tools/check_agent_docs.py`) lo verifica: bloquea el commit si
-   cambia `pyproject.toml`, `Makefile`, `.pre-commit-config.yaml` o el snapshot
-   constitucional sin tocar `AGENTS.md` o `docs/agent/`.
+   actualiza su referencia en el mismo commit. Al ejecutarse, el guard comprueba el acoplamiento
+   por rutas: los cambios preparados en las cinco superficies enumeradas en
+   `CONTRACT_SURFACES` (incluido `SOURCE.lock`) requieren también un cambio
+   preparado en `AGENTS.md` o `docs/agent/`. No valida el contenido de la actualización.
 10. **Nada escribe en GitHub.** Los pasos del agente controlado son solo
     lectura.
 11. **Estado de runs fuera del repo** (`~/.local/state/skillrun/`), permisos
@@ -82,7 +81,7 @@ mismo commit; nunca se edita el snapshot a mano.
 
 ```text
 src/skillrun.py       app completa (módulo único)
-tests/                pytest + fixtures (+ fake_pi.py desde Fase 3)
+tests/                pytest + fixtures + fake_host.py + fake_pi.py
 plugins/              plugins de ejemplo (plugin.json)
 .agents/skills/       skill de entrada (Fase 5) + skills de Matt Pocock
                       vendorizadas, fijadas en .agents/skills-lock.json
@@ -94,8 +93,9 @@ docs/agent/           documentos derivados para agentes
 tools/                guard de documentación de agentes
 ```
 
-`.agents/skills/` es contenido vendorizado: no se edita a mano ni se lintea
-(excluido en pre-commit, codespell y markdownlint).
+[La skill de entrada](.agents/skills/skillrun/SKILL.md) dirige a la persona
+usuaria a la CLI. Las otras skills de `.agents/skills/` son vendorizadas y
+no se editan a mano. El directorio se excluye de los hooks de lint.
 
 ## Comandos reales
 

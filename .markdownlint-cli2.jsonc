@@ -15,5 +15,5 @@
     "MD045": false
   },
   "frontMatter": "^---[^]*?---(\\r\\n|\\r|\\n|$)",
-  "ignores": ["node_modules/**", ".venv/**", "dist/**", ".agents/skills/**", "reference/**"]
+  "ignores": ["node_modules/**", ".venv/**", "dist/**", ".agents/skills/**", "reference/**", "tests/fixtures/**"]
 }

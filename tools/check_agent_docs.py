@@ -43,11 +43,7 @@ LINK = re.compile(r"\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)\s*\)")
 EXTERNAL_PREFIXES = ("http://", "https://", "mailto:", "#")
 
 
-def routing_findings() -> list[str]:
-    agents = ROOT / "AGENTS.md"
-    if not agents.is_file():
-        return []
-    text = agents.read_text(encoding="utf-8")
+def routing_findings(text: str) -> list[str]:
     missing = [
         f"AGENTS.md: no enruta a docs/agent/{rel.stem}.md"
         for rel in DOCS[1:]
@@ -70,6 +66,7 @@ def link_findings(rel: Path, path: Path, text: str) -> list[str]:
 
 def structure_findings() -> list[str]:
     findings: list[str] = []
+    routing: list[str] = []
     for rel in DOCS:
         path = ROOT / rel
         if not path.is_file():
@@ -89,7 +86,9 @@ def structure_findings() -> list[str]:
             for match in PLACEHOLDER.finditer(text)
         )
         findings.extend(link_findings(rel, path, text))
-    findings.extend(routing_findings())
+        if rel == DOCS[0]:
+            routing = routing_findings(text)
+    findings.extend(routing)
     return findings
 
 

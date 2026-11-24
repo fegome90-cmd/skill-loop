@@ -1,0 +1,1030 @@
+"""C2-C6 exercised through pipes to the Pi RPC stand-in."""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+from collections.abc import Mapping
+from contextlib import suppress
+from hashlib import sha1, sha256
+from pathlib import Path
+from stat import S_IMODE
+from threading import Event, current_thread, main_thread
+from typing import TYPE_CHECKING, Protocol
+
+import pytest
+
+import skillrun
+from fake_host import (
+    DISCOVERY,
+    GOAL,
+    INVESTIGATION,
+    MULTI_STEP_DISCOVERY,
+    OPENING,
+    SUMMARY,
+    SYNTHESIS_PREFIX,
+    FakeConsole,
+    RunFiles,
+    read_json,
+)
+from fake_pi import append_record, read_records
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from fake_pi import Record
+
+FAKE_PI = Path(__file__).with_name("fake_pi.py").resolve()
+SESSION_ID = "test-session-3"
+DENIED_ENV = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "SSH_AUTH_SOCK",
+}
+
+
+class History(Protocol):
+    @property
+    def entries(self) -> tuple[Mapping[str, object], ...]: ...
+
+    @property
+    def leaf_id(self) -> str | None: ...
+
+
+class PiAdapter(skillrun.Host, Protocol):
+    def history(self, cursor: str | None) -> History: ...
+
+
+class PiProcess:
+    def __init__(self, root: Path) -> None:
+        self.cwd = root / "workspace"
+        self.cwd.mkdir()
+        self.log = root / "fake-pi.jsonl"
+        self.session_dir = root / "sessions"
+        self.hosts: list[PiAdapter] = []
+        self.skills: dict[str, Path] = {}
+        self.pins: dict[str, str] = {}
+        for name in ("zeta", "alpha"):
+            path = root / "copies" / name / "SKILL.md"
+            path.parent.mkdir(parents=True, mode=0o700)
+            path.touch(mode=0o600)
+            content = f"---\nname: {name}\ndescription: Synthetic fixture\n---\n".encode()
+            path.write_bytes(content)
+            self.skills[name] = path
+            self.pins[name] = (
+                sha256(content).hexdigest()
+                if name == "zeta"
+                else sha1(
+                    f"blob {len(content)}\0".encode() + content, usedforsecurity=False
+                ).hexdigest()
+            )
+
+    def prefix(
+        self, scenario: str, fault_turn: int = 1, replies: tuple[str, ...] = ()
+    ) -> list[str]:
+        command = [
+            sys.executable,
+            str(FAKE_PI),
+            "--scenario",
+            scenario,
+            "--fault-turn",
+            str(fault_turn),
+            "--log",
+            str(self.log),
+        ]
+        for reply in replies:
+            command.extend(("--reply", reply))
+        return command
+
+    def host(
+        self,
+        scenario: str = "plain",
+        *,
+        fault_turn: int = 1,
+        replies: tuple[str, ...] = (),
+        session_id: str = SESSION_ID,
+    ) -> PiAdapter:
+        # Resolve at test time so RED also type-checks against the Phase 2 module.
+        adapter: PiAdapter = getattr(skillrun, "PiHost")(  # noqa: B009
+            cwd=self.cwd,
+            session_dir=self.session_dir,
+            session_id=session_id,
+            command=self.prefix(scenario, fault_turn, replies),
+            turn_timeout=0.65,
+            command_timeout=1.2,
+        )
+        self.hosts.append(adapter)
+        return adapter
+
+    def started(self, scenario: str = "plain", *, fault_turn: int = 1) -> PiAdapter:
+        host = self.host(scenario, fault_turn=fault_turn)
+        host.start(self.skills)
+        host.verify_skills(self.pins)
+        return host
+
+    def spawns(self) -> list[Record]:
+        return [record for record in read_records(self.log) if record["event"] == "spawn"]
+
+    def commands(self, kind: str | None = None) -> list[Record]:
+        return [
+            record["command"]
+            for record in read_records(self.log)
+            if record["event"] == "command" and (kind is None or record["command"]["type"] == kind)
+        ]
+
+
+@pytest.fixture
+def pi_process(tmp_path: Path) -> Iterator[PiProcess]:
+    process = PiProcess(tmp_path.resolve())
+    yield process
+    for host in process.hosts:
+        with suppress(skillrun.HostError):
+            host.close()
+
+
+def noop() -> None:
+    pass
+
+
+def ignore_cursor(_cursor: str | None) -> None:
+    pass
+
+
+def assert_reaped(process: PiProcess) -> None:
+    assert process.spawns()
+    for spawn in process.spawns():
+        with pytest.raises(ProcessLookupError):
+            os.kill(spawn["pid"], 0)
+
+
+def assert_dead_host(process: PiProcess, host: PiAdapter) -> None:
+    assert_reaped(process)
+    before = process.log.read_bytes()
+    with pytest.raises(skillrun.HostError):
+        host.start(process.skills)
+    with pytest.raises(skillrun.HostError):
+        host.verify_skills(process.pins)
+    with pytest.raises(skillrun.HostError):
+        host.prompt("Never send this", ignore_cursor, noop)
+    with pytest.raises(skillrun.HostError):
+        host.history(None)
+    assert process.log.read_bytes() == before
+
+
+def test_launch_passes_exact_rpc_flags_and_sanitizes_environment(
+    pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in DENIED_ENV:
+        monkeypatch.setenv(key, "synthetic-test-value")
+    monkeypatch.setenv("SKILLRUN_TEST_SENTINEL", "preserve")
+    host = pi_process.host()
+    previous_umask = os.umask(0)
+    try:
+        host.start(pi_process.skills)
+        assert os.umask(0) == 0
+    finally:
+        os.umask(previous_umask)
+
+    (spawn,) = pi_process.spawns()
+    assert spawn["spawn_count"] == 1
+    assert spawn["cwd"] == str(pi_process.cwd)
+    assert DENIED_ENV.isdisjoint(spawn["env_keys"])
+    assert "SKILLRUN_TEST_SENTINEL" in spawn["env_keys"]
+    assert S_IMODE(pi_process.session_dir.stat().st_mode) == 0o700
+    transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+    assert S_IMODE(transcript.stat().st_mode) == 0o600
+    assert spawn["argv"] == [
+        *pi_process.prefix("plain")[2:],
+        "--mode",
+        "rpc",
+        "--session-dir",
+        str(pi_process.session_dir),
+        "--session-id",
+        SESSION_ID,
+        "--tools",
+        "read,grep,find,ls",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-mcp",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--skill",
+        str(pi_process.skills["zeta"]),
+        "--skill",
+        str(pi_process.skills["alpha"]),
+    ]
+    assert [command["type"] for command in pi_process.commands()] == ["get_state"]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["state-rejected", "wrong-session-id", "outside-session-file", "streaming-on-start"],
+)
+def test_launch_reaps_unbound_session(pi_process: PiProcess, scenario: str) -> None:
+    host = pi_process.host(scenario)
+    with pytest.raises(skillrun.HostError):
+        host.start(pi_process.skills)
+    assert [command["type"] for command in pi_process.commands()] == ["get_state"]
+    assert_dead_host(pi_process, host)
+
+
+@pytest.mark.parametrize("session_id", ["", "UPPER", "-start", "a_b", "a" * 65, "../other"])
+def test_invalid_session_id_never_spawns(pi_process: PiProcess, session_id: str) -> None:
+    with pytest.raises(skillrun.HostError):
+        pi_process.host(session_id=session_id).start(pi_process.skills)
+    assert pi_process.spawns() == []
+
+
+@pytest.mark.parametrize("defect", ["symlink", "mode", "file"])
+def test_unsafe_session_dir_never_spawns(pi_process: PiProcess, defect: str) -> None:
+    directory = pi_process.session_dir
+    if defect == "symlink":
+        real = directory.with_name("real-sessions")
+        real.mkdir(mode=0o700)
+        directory.symlink_to(real, target_is_directory=True)
+    elif defect == "mode":
+        directory.mkdir()
+        directory.chmod(0o750)
+    else:
+        directory.touch()
+    with pytest.raises(skillrun.HostError):
+        pi_process.host().start(pi_process.skills)
+    assert pi_process.spawns() == []
+
+
+@pytest.mark.parametrize("defect", ["mode", "symlink", "directory"])
+def test_unsafe_session_transcript_never_spawns(pi_process: PiProcess, defect: str) -> None:
+    directory = pi_process.session_dir
+    directory.mkdir(mode=0o700)
+    transcript = directory / f"{SESSION_ID}.jsonl"
+    if defect == "mode":
+        transcript.write_text("{}\n", encoding="utf-8")
+        transcript.chmod(0o644)
+    elif defect == "symlink":
+        transcript.symlink_to(pi_process.skills["zeta"])
+    else:
+        transcript.mkdir(mode=0o700)
+    before = transcript.lstat()
+
+    with pytest.raises(skillrun.HostError):
+        pi_process.host().start(pi_process.skills)
+
+    assert pi_process.spawns() == []
+    assert transcript.lstat() == before
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Checks macOS extended ACLs")
+def test_session_dir_acl_granting_group_write_never_spawns(pi_process: PiProcess) -> None:
+    directory = pi_process.session_dir
+    directory.mkdir(mode=0o700)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow search,add_file", str(directory)],
+        check=True,
+    )
+    assert S_IMODE(directory.stat().st_mode) == 0o700
+
+    with pytest.raises(skillrun.HostError):
+        pi_process.host().start(pi_process.skills)
+    assert pi_process.spawns() == []
+
+
+@pytest.mark.parametrize("action", ["verify_skills", "prompt", "history"])
+def test_use_before_start_never_spawns(pi_process: PiProcess, action: str) -> None:
+    host = pi_process.host()
+    with pytest.raises(skillrun.HostError):
+        if action == "verify_skills":
+            host.verify_skills(pi_process.pins)
+        elif action == "prompt":
+            host.prompt("Never send this", ignore_cursor, noop)
+        else:
+            host.history(None)
+    assert pi_process.spawns() == []
+
+
+def test_start_twice_never_spawns_a_second_child(pi_process: PiProcess) -> None:
+    host = pi_process.host()
+    host.start(pi_process.skills)
+    with pytest.raises(skillrun.HostError):
+        host.start(pi_process.skills)
+    assert [spawn["spawn_count"] for spawn in pi_process.spawns()] == [1]
+
+
+def test_verify_accepts_only_the_registered_pin_copies(pi_process: PiProcess) -> None:
+    pi_process.started()
+    assert [command["type"] for command in pi_process.commands()] == [
+        "get_state",
+        "get_commands",
+    ]
+
+
+def test_verify_detects_copy_tampered_after_start(pi_process: PiProcess) -> None:
+    host = pi_process.host()
+    host.start(pi_process.skills)
+    pi_process.skills["zeta"].write_bytes(b"A tampered copy")
+    with pytest.raises(skillrun.HostError):
+        host.verify_skills(pi_process.pins)
+    assert_dead_host(pi_process, host)
+
+
+@pytest.mark.parametrize(
+    "scenario", ["missing-skill", "extra-skill", "duplicate-skill", "mislocated-skill"]
+)
+def test_verify_rejects_wrong_skill_registration(pi_process: PiProcess, scenario: str) -> None:
+    host = pi_process.host(scenario)
+    host.start(pi_process.skills)
+    with pytest.raises(skillrun.HostError):
+        host.verify_skills(pi_process.pins)
+    assert len(pi_process.commands("get_commands")) == 1
+    assert_dead_host(pi_process, host)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["plain", "interleaved", "crlf", "branch-correct", "separators", "metadata", "expanded-prompt"],
+)
+def test_prompt_correlates_response_settlement_and_active_leaf(
+    pi_process: PiProcess, scenario: str
+) -> None:
+    host = pi_process.started(scenario)
+    prompt = "/skill:zeta test\u2028input\u2029paragraph"
+
+    def prepared(cursor: str | None) -> None:
+        assert cursor is None
+        assert pi_process.commands("prompt") == []
+        append_record(pi_process.log, {"event": "test-prepared"})
+
+    def accepted() -> None:
+        assert any(record["event"] == "started-response" for record in read_records(pi_process.log))
+        append_record(pi_process.log, {"event": "test-accepted"})
+
+    turn = host.prompt(prompt, prepared, accepted)
+
+    expected_text = (
+        "Line\u2028separator\u2029paragraph\nSecond block"
+        if scenario == "separators"
+        else "Fixture answer"
+    )
+    expected_leaf = "00000004" if scenario in {"branch-correct", "metadata"} else "00000002"
+    assert turn == skillrun.Turn(expected_text, expected_leaf)
+    (submitted,) = pi_process.commands("prompt")
+    assert submitted["message"] == prompt
+    records = [
+        record["command"]["type"] if record["event"] == "command" else record["event"]
+        for record in read_records(pi_process.log)
+    ]
+    assert records == [
+        "spawn",
+        "get_state",
+        "get_commands",
+        "get_entries",
+        "test-prepared",
+        "prompt",
+        "started-response",
+        "test-accepted",
+        "get_entries",
+    ]
+    ids = [command["id"] for command in pi_process.commands()]
+    assert all(isinstance(command_id, str) for command_id in ids)
+    assert len(ids) == len(set(ids))
+    assert all("since" not in command for command in pi_process.commands("get_entries"))
+
+
+def test_tool_turns_and_two_skills_reuse_one_process_and_cursor(pi_process: PiProcess) -> None:
+    host = pi_process.started("tool")
+    cursors: list[str | None] = []
+    first = host.prompt("/skill:zeta first", cursors.append, noop)
+    second = host.prompt("/skill:alpha second", cursors.append, noop)
+    assert first == skillrun.Turn("Fixture answer", "00000004")
+    assert second == skillrun.Turn("Fixture answer", "00000008")
+    assert cursors == [None, first.leaf_id]
+    before_first, after_first, before_second, after_second = pi_process.commands("get_entries")
+    assert all("since" not in command for command in (before_first, after_first, before_second))
+    assert after_second["since"] == first.leaf_id
+    before, after = pi_process.commands("prompt")
+    assert [before["message"], after["message"]] == ["/skill:zeta first", "/skill:alpha second"]
+    assert [spawn["spawn_count"] for spawn in pi_process.spawns()] == [1]
+    history = host.history(first.leaf_id)
+    roles = []
+    for entry in history.entries:
+        message = entry["message"]
+        assert isinstance(message, Mapping)
+        roles.append(message["role"])
+    assert roles == [
+        "user",
+        "assistant",
+        "toolResult",
+        "assistant",
+    ]
+    assert history.leaf_id == second.leaf_id
+
+
+@pytest.mark.parametrize(
+    ("scenario", "accepted"),
+    [
+        ("queued", False),
+        ("handled", False),
+        ("rejected", False),
+        ("eof-before-response", False),
+        ("hang-before-response", False),
+        ("slow-response", False),
+        ("eof-after-response", None),
+        ("invalid-json", None),
+        ("non-object", None),
+        ("non-string-type", None),
+        ("invalid-utf8", None),
+        ("unknown-id", None),
+        ("extension-ui", None),
+        ("aborted", True),
+        ("error", True),
+        ("length", True),
+        ("hang", True),
+    ],
+)
+def test_bad_turn_raises_and_is_never_resent(
+    pi_process: PiProcess, scenario: str, accepted: bool | None
+) -> None:
+    host = pi_process.started(scenario)
+    checkpoints: list[tuple[str, str | None]] = []
+    with pytest.raises(skillrun.HostError):
+        host.prompt(
+            "Submit only once",
+            lambda cursor: checkpoints.append(("prepared", cursor)),
+            lambda: checkpoints.append(("accepted", None)),
+        )
+
+    assert checkpoints[0] == ("prepared", None)
+    if accepted is not None:
+        expected = [("prepared", None)]
+        if accepted:
+            expected.append(("accepted", None))
+        assert checkpoints == expected
+    assert_dead_host(pi_process, host)
+    assert [command["message"] for command in pi_process.commands("prompt")] == ["Submit only once"]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "branch-diverged",
+        "branch-mismatch",
+        "branch-user-mismatch",
+        "branch-extra-user",
+        "branch-wrong-stop",
+    ],
+)
+def test_matching_abandoned_branch_cannot_validate_invalid_active_turn(
+    pi_process: PiProcess, scenario: str
+) -> None:
+    host = pi_process.started(scenario, fault_turn=2)
+    first = host.prompt("Establish a cursor", ignore_cursor, noop)
+    cursors: list[str | None] = []
+    with pytest.raises(skillrun.HostError):
+        host.prompt("Branch-sensitive prompt", cursors.append, noop)
+    assert cursors == [first.leaf_id]
+    assert pi_process.commands("get_entries")[-1]["since"] == first.leaf_id
+    assert_dead_host(pi_process, host)
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        "Establish a cursor",
+        "Branch-sensitive prompt",
+    ]
+
+
+def test_history_is_read_only_and_reopens_the_same_session(pi_process: PiProcess) -> None:
+    first = pi_process.started()
+    cursor = first.prompt("Persist first turn", ignore_cursor, noop).leaf_id
+    leaf = first.prompt("Persist second turn", ignore_cursor, noop).leaf_id
+    history = first.history(None)
+    first.close()
+    assert_reaped(pi_process)
+
+    reopened = pi_process.started()
+    before = len(pi_process.commands())
+    all_entries = reopened.history(None)
+    tail = reopened.history(cursor)
+    assert isinstance(all_entries, getattr(skillrun, "PiHistory"))  # noqa: B009
+    assert isinstance(all_entries.entries, tuple)
+    assert all_entries == history
+    assert all_entries.leaf_id == tail.leaf_id == leaf
+    assert [entry["id"] for entry in tail.entries] == ["00000003", "00000004"]
+    queries = pi_process.commands()[before:]
+    assert "since" not in queries[0]
+    assert [(query["type"], query.get("since")) for query in queries] == [
+        ("get_entries", None),
+        ("get_entries", cursor),
+    ]
+    first_spawn, second_spawn = pi_process.spawns()
+    assert first_spawn["argv"] == second_spawn["argv"]
+    assert second_spawn["spawn_count"] == 2
+    assert (pi_process.session_dir / f"{SESSION_ID}.jsonl").is_file()
+
+
+@pytest.mark.parametrize("scenario", ["plain", "close-failure", "close-nonzero"])
+def test_close_reaps_child_even_when_exit_is_unsuccessful(
+    pi_process: PiProcess, scenario: str
+) -> None:
+    host = pi_process.started(scenario)
+    if scenario == "plain":
+        host.close()
+    else:
+        with pytest.raises(skillrun.HostError):
+            host.close()
+    assert_reaped(pi_process)
+    events = [record["event"] for record in read_records(pi_process.log)]
+    assert "eof" in events
+    if scenario == "close-failure":
+        assert events[-2:] == ["eof", "sigterm"]
+    before = pi_process.log.read_bytes()
+    host.close()
+    assert pi_process.log.read_bytes() == before
+
+
+def test_run_plugin_finishes_multiple_skills_with_one_pi_session(
+    tmp_path: Path, pi_process: PiProcess, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = RunFiles(tmp_path, "complete", workspace=pi_process.cwd)
+    answer = "  Keep the original scope.\t "
+    round_reply = "What evidence should be collected?"
+    grilling_prompts = [
+        f"/skill:grilling {GOAL}",
+        answer,
+        SYNTHESIS_PREFIX + '{"decisions": "array", "summary": "string"}',
+    ]
+
+    def check_before_confirmation() -> None:
+        assert [command["message"] for command in pi_process.commands("prompt")] == grilling_prompts
+
+    console = FakeConsole(answers=(answer, ":listo"), on_confirm=check_before_confirmation)
+    host = pi_process.host(
+        "tool", replies=(OPENING, round_reply, MULTI_STEP_DISCOVERY, INVESTIGATION, SUMMARY)
+    )
+
+    outcome = run.invoke(host, console)
+
+    assert (outcome.status, outcome.exit_code) == ("complete", 0)
+    assert run.state()["status"] == "complete"
+    assert console.confirmations == [("discovery", {"summary": "Agreed scope", "decisions": []})]
+    assert console.shown == [
+        ("discovery", text) for text in (OPENING, round_reply, MULTI_STEP_DISCOVERY)
+    ]
+    assert capsys.readouterr().out == ""
+    (spawn,) = pi_process.spawns()
+    argv = spawn["argv"]
+    assert [argv[index + 1] for index, flag in enumerate(argv) if flag == "--skill"] == [
+        str(run.directory.resolve() / "skills" / name / "SKILL.md")
+        for name in ("grilling", "research", "summary")
+    ]
+    prompts = [command["message"] for command in pi_process.commands("prompt")]
+    assert prompts[:3] == grilling_prompts
+    assert [prompt.split()[0] for prompt in prompts[3:]] == ["/skill:research", "/skill:summary"]
+    assert_reaped(pi_process)
+
+
+def test_run_plugin_pin_mismatch_never_spawns_pi(tmp_path: Path, pi_process: PiProcess) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    skill = read_json(run.plugin_path)["skills"]["grilling"]
+    (run.plugin_path.parent / skill["path"]).write_bytes(b"Changed pinned bytes")
+    outcome = run.invoke(pi_process.host())
+    assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
+    assert outcome.reason and outcome.reason.startswith("Skill pin mismatch")
+    assert pi_process.spawns() == []
+    assert pi_process.commands() == []
+
+
+@pytest.mark.parametrize(
+    ("history", "answer"),
+    [("missing", "Keep the original scope."), ("off-branch", ":listo")],
+)
+def test_run_plugin_refuses_to_resume_awaiting_without_verified_pi_branch(
+    tmp_path: Path, pi_process: PiProcess, history: str, answer: str
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    paused = run.invoke(pi_process.host(replies=(OPENING,)), FakeConsole(answers=(EOFError(),)))
+    assert (paused.status, paused.exit_code, run.state()["status"]) == (
+        "cancelled",
+        130,
+        "awaiting",
+    )
+    receipt = run.state_path.read_bytes()
+    trace = run.trace_path().read_bytes()
+    transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+    if history == "missing":
+        transcript.unlink()
+    else:
+        append_record(transcript, {"type": "session_info", "id": "ffffffff", "parentId": None})
+
+    console = FakeConsole(answers=(answer, ":listo"))
+    resumed = run.invoke(pi_process.host(replies=(DISCOVERY, DISCOVERY)), console)
+
+    assert (resumed.status, resumed.exit_code, resumed.step_id) == ("blocked", 10, "discovery")
+    assert resumed.reason == "Pi active branch does not reach the saved verified turn"
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}"
+    ]
+    assert console.shown == [("discovery", OPENING)]
+    assert console.confirmations == []
+    assert run.state_path.read_bytes() == receipt
+    assert run.trace_path().read_bytes() == trace
+    assert not run.trace_path(turn=2).exists()
+    assert_reaped(pi_process)
+
+
+@pytest.mark.parametrize("descendant", [False, True], ids=["exact-leaf", "descendant"])
+def test_run_plugin_resumes_awaiting_on_verified_pi_branch(
+    tmp_path: Path, pi_process: PiProcess, descendant: bool
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    paused = run.invoke(pi_process.host(replies=(OPENING,)), FakeConsole(answers=(EOFError(),)))
+    assert (paused.status, paused.exit_code, run.state()["status"]) == (
+        "cancelled",
+        130,
+        "awaiting",
+    )
+    if descendant:
+        transcript = pi_process.session_dir / f"{SESSION_ID}.jsonl"
+        append_record(
+            transcript,
+            {
+                "type": "session_info",
+                "id": "ffffffff",
+                "parentId": run.state()["previous"]["leaf_id"],
+            },
+        )
+
+    answer = "  Keep the original scope.  "
+    round_reply = "What evidence should be collected?"
+    console = FakeConsole(answers=(answer, ":listo"))
+    resumed = run.invoke(pi_process.host(replies=(round_reply, DISCOVERY)), console)
+
+    assert (resumed.status, resumed.exit_code, run.state()["status"]) == ("complete", 0, "complete")
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}",
+        answer,
+        SYNTHESIS_PREFIX + '{"summary": "string"}',
+    ]
+    assert console.shown == [("discovery", text) for text in (OPENING, round_reply, DISCOVERY)]
+    assert_reaped(pi_process)
+
+
+def test_run_plugin_rechecks_pins_before_restoring_skills_from_literal_round(
+    tmp_path: Path, pi_process: PiProcess
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    copy = run.directory / "skills" / "grilling" / "SKILL.md"
+    checked: list[bytes] = []
+
+    def alter_copy_on_second_answer() -> None:
+        if run.state()["turn_kind"] == "round":
+            checked.append(run.state_path.read_bytes())
+            copy.write_text("Different copied skill", encoding="utf-8")
+
+    console = FakeConsole(
+        answers=("/skill:grilling verbatim", ":listo"), on_ask=alter_copy_on_second_answer
+    )
+    result = run.invoke(pi_process.host(replies=(OPENING,)), console)
+
+    assert (result.status, result.exit_code) == ("blocked", 10)
+    assert result.reason == "Pi could not reopen the same verified session for the next turn"
+    assert checked == [run.state_path.read_bytes()]
+    assert len(pi_process.spawns()) == 2
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}",
+        "/skill:grilling verbatim",
+    ]
+    assert_reaped(pi_process)
+
+
+def test_run_plugin_detects_source_change_after_copy_before_spawning_pi(
+    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    skill = read_json(run.plugin_path)["skills"]["grilling"]
+    source = run.plugin_path.parent / skill["path"]
+    copy = run.directory / "skills" / "grilling" / "SKILL.md"
+    pinned_bytes = source.read_bytes()
+    reads = 0
+    read_skill = skillrun.read_skill_bytes
+
+    def change_after_copy(path: Path) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            assert copy.read_bytes() == pinned_bytes
+            path.write_bytes(b"Changed after the private copy was written")
+        return read_skill(path)
+
+    monkeypatch.setattr(skillrun, "read_skill_bytes", change_after_copy)
+    outcome = run.invoke(pi_process.host())
+
+    assert reads == 2
+    assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
+    assert outcome.reason and outcome.reason.startswith("Skill pin mismatch")
+    assert not run.state_path.exists()
+    assert pi_process.spawns() == []
+
+
+def test_run_plugin_blocks_invalid_rpc_after_verified_history(
+    tmp_path: Path, pi_process: PiProcess
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    host = pi_process.host("late-invalid-json", fault_turn=2, replies=(OPENING, DISCOVERY))
+
+    def wait_for_protocol_failure() -> None:
+        (spawn,) = pi_process.spawns()
+        pi_process.log.with_suffix(".emit-invalid").touch()
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            try:
+                os.kill(spawn["pid"], 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        pytest.fail("Pi was not reaped after emitting malformed JSON during confirmation")
+
+    outcome = run.invoke(host, FakeConsole(on_confirm=wait_for_protocol_failure))
+
+    assert (outcome.status, outcome.exit_code, outcome.step_id) == ("blocked", 10, "discovery")
+    assert run.state()["status"] == "blocked"
+    assert len(pi_process.commands("prompt")) == 2
+    assert_reaped(pi_process)
+
+
+@pytest.mark.parametrize("interrupt", [False, True], ids=["normal-join", "interrupted-join"])
+def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
+    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch, interrupt: bool
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    host = pi_process.host("invalid-json-on-stdin-eof", fault_turn=2, replies=(OPENING, DISCOVERY))
+    assert isinstance(host, skillrun.PiHost)
+    reader_parked = Event()
+    reader_can_resume = Event()
+    resumed_for_join: list[bool] = []
+    interrupted = False
+    record_output = host._record_output
+
+    def park_before_eof(record: dict[str, object]) -> None:
+        if record.get("type") == "before_stdin_eof":
+            reader_parked.set()
+            resumed_for_join.append(reader_can_resume.wait(4))
+        record_output(record)
+
+    def hold_reader_until_join() -> None:
+        assert reader_parked.wait(4)
+        assert host._reader is not None
+        join = host._reader.join
+
+        def resume_and_join(timeout: float | None = None) -> None:
+            nonlocal interrupted
+            if interrupt and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt("interrupted during reader join")
+            reader_can_resume.set()
+            join(timeout)
+
+        monkeypatch.setattr(host._reader, "join", resume_and_join)
+
+    monkeypatch.setattr(host, "_record_output", park_before_eof)
+    try:
+        outcome = run.invoke(host, FakeConsole(on_confirm=hold_reader_until_join))
+    finally:
+        reader_can_resume.set()
+
+    assert interrupted is interrupt
+    assert resumed_for_join == [True]
+    assert [record["event"] for record in read_records(pi_process.log)][-2:] == [
+        "eof",
+        "invalid-json-written",
+    ]
+    assert_reaped(pi_process)
+    assert host._reader is not None and not host._reader.is_alive()
+    if interrupt:
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "cancelled",
+            130,
+            "Run interrupted",
+        )
+    else:
+        assert (outcome.status, outcome.exit_code) == ("blocked", 10)
+    state = run.state()
+    assert (state["status"], state.get("reason")) == ("blocked", "Host shutdown failed")
+    assert run.trace_path(turn=2).is_file()
+    log = pi_process.log.read_bytes()
+    resumed = run.invoke(pi_process.host())
+    assert (resumed.status, resumed.exit_code, resumed.reason) == (
+        "blocked",
+        10,
+        "Host shutdown failed",
+    )
+    assert run.state() == state
+    assert pi_process.log.read_bytes() == log
+
+
+@pytest.mark.parametrize("edit_after_dispatch", [False, True], ids=["during-reopen", "after-send"])
+def test_workspace_snapshot_is_bound_to_prompt_dispatch(
+    tmp_path: Path,
+    pi_process: PiProcess,
+    monkeypatch: pytest.MonkeyPatch,
+    edit_after_dispatch: bool,
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    path = run.workspace / "working-file"
+    path.write_text("Before edit", encoding="utf-8")
+    before_edit = skillrun.workspace_digest(run.workspace)
+    answer = "/skill:grilling Keep this answer literal."
+    host = pi_process.host(replies=(OPENING,))
+    assert isinstance(host, skillrun.PiHost)
+    request = host._request
+    edits: list[str] = []
+
+    def request_with_edit(
+        kind: str, *, deadline: float | None = None, **fields: object
+    ) -> dict[str, object]:
+        result = request(kind, deadline=deadline, **fields)
+        # These replies acknowledge the literal profile registration and prompt dispatch.
+        if edit_after_dispatch and kind == "prompt" and fields.get("message") == answer:
+            assert result["disposition"] == "started"
+            assert run.state()["status"] == "prepared"
+        elif not edit_after_dispatch and kind == "get_commands" and result.get("commands") == []:
+            assert run.state()["status"] == "awaiting"
+        else:
+            return result
+        path.write_text("After edit", encoding="utf-8")
+        edits.append(skillrun.workspace_digest(run.workspace))
+        return result
+
+    monkeypatch.setattr(host, "_request", request_with_edit)
+    outcome = run.invoke(host, FakeConsole(answers=(answer, EOFError())))
+
+    (after_edit,) = edits
+    assert before_edit != after_edit
+    assert [command["message"] for command in pi_process.commands("prompt")][-1] == answer
+    state = run.state()
+    assert state["turn"] == 2
+    if edit_after_dispatch:
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "blocked",
+            10,
+            "Workspace changed during agent turn",
+        )
+        assert (state["status"], state["workspace_sha256"]) == ("blocked", before_edit)
+        assert not run.trace_path(turn=2).exists()
+    else:
+        assert (outcome.status, outcome.exit_code) == ("cancelled", 130)
+        assert (state["status"], state["workspace_sha256"]) == ("awaiting", after_edit)
+        assert run.trace_path(turn=2).is_file()
+    assert_reaped(pi_process)
+
+
+@pytest.mark.parametrize("scenario", ["eof-before-response", "hang"], ids=["prepared", "accepted"])
+def test_run_plugin_blocks_uncertain_turn_without_relaunching_or_resending(
+    tmp_path: Path, pi_process: PiProcess, scenario: str
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    first = run.invoke(pi_process.host(scenario))
+    assert (first.status, first.exit_code, first.step_id) == ("blocked", 10, "discovery")
+    assert run.state()["status"] == "blocked"
+    assert_reaped(pi_process)
+    assert len(pi_process.commands("prompt")) == 1
+    before = pi_process.log.read_bytes()
+
+    resumed = run.invoke(pi_process.host())
+    assert (resumed.status, resumed.exit_code, resumed.step_id) == ("blocked", 10, "discovery")
+    assert pi_process.log.read_bytes() == before
+
+    skillrun.reconcile(run.directory, "discovery", "retry", "tester")
+    assert run.state()["status"] == "ready"
+    assert pi_process.log.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["stream-descendant-on-eof", "idle-descendant-on-eof", "partial-idle-descendant-on-eof"],
+)
+def test_close_requires_eof_even_after_reaping_pi(pi_process: PiProcess, scenario: str) -> None:
+    host = pi_process.started(scenario)
+    started = time.monotonic()
+    try:
+        with pytest.raises(skillrun.HostError, match="Pi RPC did not shut down cleanly"):
+            host.close()
+        assert_reaped(pi_process)
+        # The drain is bounded by command_timeout (1.2 s), not the descendant's 5 s.
+        assert time.monotonic() - started < 3.0
+    finally:
+        (descendant,) = (
+            record["pid"]
+            for record in read_records(pi_process.log)
+            if record["event"] == "descendant"
+        )
+        with suppress(ProcessLookupError):
+            os.kill(descendant, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("phase", ["close-entry", "child-wait", "reader-join"])
+def test_run_plugin_interrupted_close_reaps_and_preserves_the_checkpoint(
+    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    joining = phase == "reader-join"
+    scenario = "clean-reader-on-stdin-eof" if joining else "close-failure"
+    host = pi_process.host(scenario, fault_turn=2, replies=(OPENING, DISCOVERY))
+    assert isinstance(host, skillrun.PiHost)
+    checkpoint: list[bytes] = []
+    reader_parked = Event()
+    reader_can_resume = Event()
+    interrupted = False
+    record_output = host._record_output
+
+    def park_before_eof(record: dict[str, object]) -> None:
+        if record.get("type") == "before_stdin_eof":
+            reader_parked.set()
+            reader_can_resume.wait(4)
+        record_output(record)
+
+    def interrupt_close() -> None:
+        checkpoint.append(run.state_path.read_bytes())
+        assert run.state()["status"] == "settled"
+        assert host._process is not None
+        if phase == "close-entry":
+
+            def interrupt_on_dead(instance: skillrun.PiHost, name: str, value: object) -> None:
+                nonlocal interrupted
+                object.__setattr__(instance, name, value)
+                if instance is host and name == "_dead" and value is True and not interrupted:
+                    interrupted = True
+                    signal.raise_signal(signal.SIGINT)
+
+            monkeypatch.setattr(skillrun.PiHost, "__setattr__", interrupt_on_dead)
+        elif joining:
+            assert reader_parked.wait(4)
+            assert host._reader is not None
+            join = host._reader.join
+
+            def interrupt_join(timeout: float | None = None) -> None:
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt("interrupted during reader join")
+                reader_can_resume.set()
+                join(timeout)
+
+            monkeypatch.setattr(host._reader, "join", interrupt_join)
+        else:
+            wait = host._process.wait
+
+            def interrupt_wait(timeout: float | None = None) -> int:
+                nonlocal interrupted
+                if not interrupted and current_thread() is main_thread():
+                    interrupted = True
+                    raise KeyboardInterrupt("interrupted during child wait")
+                return wait(timeout)
+
+            monkeypatch.setattr(host._process, "wait", interrupt_wait)
+
+    if joining:
+        monkeypatch.setattr(host, "_record_output", park_before_eof)
+    started = time.monotonic()
+    try:
+        outcome = run.invoke(host, FakeConsole(on_confirm=interrupt_close))
+
+        assert interrupted
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "cancelled",
+            130,
+            "Run interrupted",
+        )
+        assert run.state_path.read_bytes() == checkpoint[0]
+        assert len(pi_process.commands("prompt")) == 2
+        assert time.monotonic() - started < 3.0
+        assert_reaped(pi_process)
+        assert host._reader is not None and not host._reader.is_alive()
+        log = pi_process.log.read_bytes()
+        resumed = run.invoke(pi_process.host())
+        assert (resumed.status, resumed.exit_code) == ("complete", 0)
+        assert run.state()["status"] == "complete"
+        assert pi_process.log.read_bytes() == log
+    finally:
+        # Keep the fake child and its reader bounded even when the regression fails.
+        reader_can_resume.set()
+        if host._process is not None:
+            host._process.kill()
+            host._process.wait(timeout=3)
+        if host._reader is not None:
+            host._reader.join(timeout=3)
+
+
+def test_run_plugin_blocks_a_truncated_record_at_stdin_eof(
+    tmp_path: Path, pi_process: PiProcess
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    outcome = run.invoke(
+        pi_process.host("truncated-record-on-stdin-eof", replies=(OPENING, DISCOVERY))
+    )
+
+    events = [record["event"] for record in read_records(pi_process.log)]
+    assert events[-2:] == ["eof", "truncated-record-written"]
+    assert_reaped(pi_process)
+    assert (outcome.status, outcome.exit_code, run.state()["status"]) == ("blocked", 10, "blocked")

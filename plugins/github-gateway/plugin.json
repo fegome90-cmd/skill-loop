@@ -9,7 +9,7 @@
     },
     "github-project": {
       "path": "skills/github-project/SKILL.md",
-      "sha256": "PENDIENTE_64_HEX"
+      "sha256": "9a602e0d09a84ae6cd8e0cfb081013d85d075c0f026d44af970cd0c43b1d1c67"
     }
   },
   "steps": [
@@ -23,7 +23,7 @@
       "id": "github-knowledge",
       "skill": "github-project",
       "kind": "skill",
-      "instruction": "Usa las decisiones confirmadas para diagnosticar el repositorio. Solo lectura; no ejecutes scripts de terceros.",
+      "instruction": "Usa las decisiones confirmadas para diagnosticar el checkout local en el directorio de trabajo. Solo lectura; no ejecutes scripts de terceros.",
       "result": {"diagnosis": "string", "evidence": "array"}
     }
   ],

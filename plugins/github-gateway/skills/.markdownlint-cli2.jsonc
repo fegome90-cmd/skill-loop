@@ -1,0 +1,6 @@
+{
+  // Pinned skills use their front-matter name as the document title.
+  "config": {
+    "MD041": { "front_matter_title": "^\\s*\"?(?:title|name)\"?\\s*[:=]" }
+  }
+}

@@ -16,6 +16,12 @@ responsabilidades e invariantes, en [ARCHITECTURE.md](ARCHITECTURE.md).
 | `docs/constitution/SOURCE.lock` | Commit, ruta y SHA-256 del origen canónico |
 | `docs/constitution/AGENTIC-CONSTITUTION.md` | Texto normativo de referencia (no se edita a mano) |
 | `src/skillrun.py` | App completa (módulo único) |
+| `run_plugin()`, `reconcile()` en `src/skillrun.py` | Supervisor, recuperación y decisiones sobre turnos inciertos |
+| `workspace_digest()`, `Console`, `TerminalConsole` en `src/skillrun.py` | Snapshot por turno y entrada/salida humana |
+| `Host`, `Turn`, `HostError` en `src/skillrun.py` | Interfaz del host para el adaptador Pi RPC |
+| `PiHost`, `PiHistory`, `read_skill_bytes()` en `src/skillrun.py` | Adaptador Pi RPC y lectura de skills fijadas |
+| `tests/fake_pi.py` | Pi falso como subproceso, con turnos de herramientas y escenarios de fallo |
+| `tests/test_grilling.py`, `tests/test_workspace.py`, `tests/test_terminal_console.py`, `tests/test_phase4_review.py` | Rondas, snapshots, terminal y regresiones de Fase 4 |
 | `tests/` | Suite pytest y fixtures |
 | `plugins/github-gateway/plugin.json` | Plugin de ejemplo `skillrun/v1` |
 | `.agents/skills-lock.json` | Pins (git blob) de las skills vendorizadas |
@@ -56,5 +62,6 @@ Para propósito y términos, [CONTEXT.md](CONTEXT.md).
   `src_skillrun_pluginerror`. Es evidencia derivada y no se versiona.
 - El grafo anterior describía el scaffold `skill_loop`, retirado en el merge, y
   ya no aplica.
-- Pendiente: cuando el módulo crezca por fase, añadir filas por sección; hoy el
-  mapa apunta a `src/skillrun.py` completo a propósito.
+- El grafo citado arriba corresponde a la Fase 1. Para el motor actual, el
+  [handoff de Fase 4](../../handoffs/HANDOFF-2026-11-21-PHASE-4.md) registra
+  las pruebas específicas y el alcance verificado; no se regeneró el grafo.

@@ -33,13 +33,16 @@ herramienta que escriba en GitHub.
 - **Contrato de resultado**: claves exactas y tipo exacto (`string`, `array`,
   `object`, `integer`, `boolean`); es el gate de avance.
 - **Digest**: SHA-256 del JSON canónico del plugin; invalida un run si cambia.
-- **Recibos**: `prepared → accepted → settled → done` por paso; fallo →
-  `blocked`, nunca reintento automático.
+- **Recibos**: identifican cada turno por run, paso, intento y número. En
+  grilling, `awaiting` significa que se espera a la persona, no al agente.
+  Un turno incierto nunca se reenvía automáticamente.
 
 ## Alcance
 
-Lo que existe: ver el último handoff en `handoffs/`. Las fases están en
-PLAN.md §6.
+El motor admite varios pasos en una sesión. La [CLI](../../README.md#cli)
+expone `validate`, `run`, `status` y `reconcile`. El
+[handoff de Fase 6](../../handoffs/HANDOFF-2026-11-21-PHASE-6.md) registra
+la prueba con Pi real y sus límites.
 
 ## Límites
 
@@ -50,5 +53,5 @@ PLAN.md §6.
 ## Evidencia y pendientes
 
 - Fuentes: `PLAN.md`, `README.md`, `AGENTS.md`, `docs/CONSTITUTION.md`.
-- Pendiente: el pin de `grilling` (`d2f09a18…` en el plan vs `8ca78c6d…`
-  vendorizado) se decide en la Fase 6.
+- Decidido en la Fase 6: el plugin fija el `grilling` original (`d2f09a18…`);
+  la copia vendorizada (`8ca78c6d…`) no se modifica.

@@ -13,7 +13,9 @@ ejecutado ni que pase.
 - Configuración: `pyproject.toml` (Ruff, mypy, pytest, Bandit),
   `.yamllint.yaml`, `.markdownlint-cli2.jsonc`, `.codespellrc`, `.shellcheckrc`
   y `.pre-commit-config.yaml`.
-- Variables de entorno: ninguna requerida. Sin credenciales ni servicios.
+- Variables de entorno: `XDG_STATE_HOME` absoluto es opcional para el motor.
+  Las pruebas usan un host falso, un Pi falso como subproceso
+  (`tests/fake_pi.py`) y un directorio temporal privado. Ninguna llama a Pi real.
 - Herramientas externas de documentación, no declaradas como dependencias:
   el guion `agent-docs-kit` (PEP 723) y `graphify` 0.9.26.
 
@@ -24,19 +26,19 @@ Todos se ejecutan desde la raíz del repositorio.
 | Acción | Comando | Fuente | Estado de verificación |
 | --- | --- | --- | --- |
 | Sincronizar entorno | `uv sync` | `Makefile` (`install`) | Solo leído |
-| Lint completo | `make lint` o `make check` | `Makefile` | Solo leído; se ejecutaron sus componentes de Python por separado |
+| Lint completo | `make lint` | `Makefile` | Ejecutado al cierre de Fase 4 en copia aislada: código 0 |
 | Ruff lint | `uv run ruff check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, "All checks passed!" |
-| Formato | `uv run ruff format --check .` | `Makefile` (`lint-python`) | Ejecutado: código 0, 18 archivos ya formateados |
-| Tipos | `uv run mypy src tests` | `Makefile` (`lint-python`) | strict sobre código y tests (tests tipados tras la Fase 1) |
+| Formato | `uv run ruff format --check .` | `Makefile` (`lint-python`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
+| Tipos | `uv run mypy src tests` | `Makefile` (`lint-python`) | Strict sobre código y tests, ejecutado en Fase 2: código 0 |
 | Seguridad | `uv run bandit -c pyproject.toml -r src` | `Makefile` (`lint-python`) | Ejecutado: código 0, 0 hallazgos |
 | Ortografía | `uv run codespell` | `Makefile` (`lint-python`) | Ejecutado: código 0, sin salida |
-| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 1: código 0, 158 passed |
-| Validar un plugin | `uv run skillrun validate <plugin.json>` | `src/skillrun.py` (`main`) | Ejecutado: código 0 con `tests/fixtures/plugins/complete.json`; código 10 con `plugins/github-gateway/plugin.json` (pin pendiente). El código 2 de uso no se verificó |
-| Markdown | `uv run pre-commit run markdownlint-cli2 --all-files` | `Makefile` (`lint-docs`) | Solo leído |
-| YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml` | `Makefile` (`lint-yaml`) | Solo leído |
+| Pruebas | `uv run pytest` | `pyproject.toml` (`testpaths`) | Ejecutado al cierre de Fase 4: código 0, 342 aprobadas |
+| Validar un plugin | `uv run skillrun validate <plugin.json>` | `src/skillrun.py` (`main`) | Comparación de Fase 2 contra `e636858`: coincidieron stdout, stderr y códigos 0, 2 y 10 en los casos ejecutados |
+| Markdown | `uv run pre-commit run markdownlint-cli2 --all-files` | `Makefile` (`lint-docs`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
+| YAML | `uv run yamllint -c .yamllint.yaml .pre-commit-config.yaml .yamllint.yaml docs/constitution/SOURCE.lock` | `Makefile` (`lint-yaml`) | Ejecutado como parte de `make lint` en Fase 2: código 0 |
 | Hooks de Git | `uv run pre-commit install` | `Makefile` (`hooks`) | **No ejecutado**: al cierre de Fase 1 el hook `agent-docs` seguía sin instalar, así que sólo actuó cuando se corrió a mano |
 | Verificar documentos de agente | `uv run --script <kit>/agent_docs_kit.py check <raíz>` | Kit documental | Ejecutado sobre este repositorio |
-| Verificar documentación de agentes (determinista) | `uv run python tools/check_agent_docs.py` | `tools/check_agent_docs.py`, hook `agent-docs` | Ejecutado: código 0; falla si falta un documento, queda un borrador, un enlace local está roto o el contrato cambia sin tocar `docs/agent/` |
+| Verificar documentación de agentes (determinista) | `uv run python tools/check_agent_docs.py` | `tools/check_agent_docs.py`, hook `agent-docs` | Ejecutado: código 0; falla si falta un documento, queda un borrador, un enlace local está roto o una superficie del contrato cambia en el índice sin un cambio preparado en `AGENTS.md` o `docs/agent/` |
 | Regenerar el grafo del mapa | ver "Mapa de código" | Kit documental | Ejecutado con graphify 0.9.26 |
 
 ## Mapa de código (CODEMAP)
@@ -61,9 +63,13 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
 ## Procesos y diagnóstico
 
 - No hay servicios, puertos ni procesos de larga duración.
-- `pytest` devuelve 5 cuando no recolecta tests. La suite tiene **158 casos**, así
-  que un 5 significa que no se recolectó nada, no que falten tests.
-  `make lint` no ejecuta pytest; córrelo aparte.
+- `run`, `status` y `reconcile` están documentados en la
+  [referencia de la CLI](../../README.md#cli).
+  `TerminalConsole` lee de stdin y escribe en stderr. El resultado
+  operativo de cada comando se emite como JSON en stdout.
+- `pytest` devuelve 5 cuando no recolecta tests. Ejecuta pytest y `make lint`
+  como comprobaciones separadas.
+- `make lint` llama al guard con `--no-coupling` y al hook de Markdown con `--fix`; para una auditoría de solo lectura, no correr ese objetivo sobre el worktree.
 - `make lint` propaga fallos: no hay `|| true`. Un componente fallido provoca
   el fallo del objetivo y debe tratarse, no silenciarse.
 - `agent_docs_kit.py check` valida presencia de los cinco documentos, UTF-8 con
@@ -72,11 +78,13 @@ uv run --no-python-downloads --script <ruta-al-kit>/agent_docs_kit.py graph <rep
 
 ## Evidencia y pendientes
 
-- Comprobado por ejecución en `ddced5f` (commit de cierre de Fase 1): `pytest`
-  (158 passed en 0.13 s), `ruff check`, `ruff format --check`, `mypy src`,
-  `codespell`, `skillrun validate` con los dos plugins (0 y 10) y el grafo.
-- Ejecutado también: `tools/check_agent_docs.py` (estructura y acoplamiento).
-- Sólo leído: `uv sync`, `make lint` completo, `pre-commit`/markdownlint y
-  `yamllint`. Registrarlos como pendientes, no como verdes.
+- El [handoff de Fase 2](../../handoffs/HANDOFF-2026-11-20-PHASE-2.md) enlaza
+  el candidato verificado y registra las pruebas de caída de proceso, permisos
+  y compatibilidad. La suite del motor usa primitivas POSIX.
+- El [handoff de Fase 3](../../handoffs/HANDOFF-2026-11-21-PHASE-3.md) registra
+  la verificación del adaptador Pi RPC con Pi falso y la revisión nativa.
+- El [handoff de Fase 4](../../handoffs/HANDOFF-2026-11-21-PHASE-4.md) registra
+  la prueba de grilling, confirmación y pasos posteriores en una sola sesión
+  con Pi falso. La validación con Pi real se registró en la Fase 6.
 - Pendiente: decidir si conviene un objetivo `make codemap`; hoy el comando del
   grafo vive sólo en este documento.
