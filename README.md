@@ -39,8 +39,13 @@ uv run skillrun reconcile --run-id <id>
   `SKILL.md` ni inicia Pi. Su JSON incluye `ok` y `plugin_id`/`digest` o
   `errors`.
 - `run` comprueba los pins antes de iniciar Pi y usa `--cwd` tanto para Pi
-  como para el snapshot. Durante el grilling, responde por stdin. Escribe
-  `:listo` para pedir la síntesis y confirma con `s` para avanzar.
+  como para el snapshot. En Pi, la skill de grilling no delega: para
+  consultar el checkout dispone de `read`, `grep`, `find` y `ls`.
+  El host pasa esta instrucción explícitamente, en lugar de cargar un
+  `APPEND_SYSTEM.md` del proyecto o del usuario. Durante el grilling,
+  responde por stdin. Si escribes `/skill:grilling ejemplo` como respuesta,
+  Pi lo guarda como texto literal: no ejecuta la skill. Escribe `:listo`
+  para pedir la síntesis y confirma con `s` para avanzar.
   Al completar, el JSON incluye `result`: el último bloque JSON del paso
   final, validado contra su contrato y el recibo. Al volver a ejecutar un
   run completo con los mismos parámetros, no se inicia Pi; si falta el
@@ -74,7 +79,8 @@ grilling, las preguntas y los avisos van a stderr. `--help` muestra ayuda.
 El estado y la sesión de Pi viven fuera de `--cwd`, en
 `$XDG_STATE_HOME/skillrun/<id>/` si `XDG_STATE_HOME` es absoluto; si no,
 en `~/.local/state/skillrun/<id>/`. El ID debe cumplir
-`[a-z0-9][a-z0-9-]{0,63}`.
+`[a-z0-9][a-z0-9-]{0,63}`. Si termina en guion, Pi usa un identificador interno
+estable; el directorio del run y todos los comandos de la CLI conservan el ID original.
 
 ## Cómo trabajar por fases
 

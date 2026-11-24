@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -8,6 +9,10 @@ import pytest
 
 @pytest.mark.parametrize("options", [(), ("--no-coupling",)])
 def test_invalid_agents_utf8_reports_all_findings(tmp_path: Path, options: tuple[str, ...]) -> None:
+    # Isolate Git discovery and any repository or index overrides inherited from a hook.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    subprocess.run(["git", "init", "--quiet", "--template="], cwd=tmp_path, env=env, check=True)
+
     guard = tmp_path / "tools/check_agent_docs.py"
     guard.parent.mkdir()
     shutil.copyfile(Path(__file__).resolve().parents[1] / "tools/check_agent_docs.py", guard)
@@ -21,6 +26,7 @@ def test_invalid_agents_utf8_reports_all_findings(tmp_path: Path, options: tuple
     result = subprocess.run(
         [sys.executable, "-IB", str(guard), *options],
         cwd=tmp_path,
+        env=env,
         capture_output=True,
         text=True,
         check=False,

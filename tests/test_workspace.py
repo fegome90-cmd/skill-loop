@@ -119,11 +119,8 @@ def test_workspace_digest_rejects_special_and_unreadable_entries(
         if os.access(path, os.R_OK):
             pytest.skip("This user can read the file despite mode 000")
 
-    with pytest.raises(Exception) as raised:  # noqa: PT011
+    with pytest.raises(skillrun.WorkspaceSnapshotError):
         digest(tmp_path)
-
-    assert type(raised.value).__module__ == skillrun.__name__
-    assert not isinstance(raised.value, skillrun.HostError)
 
 
 def test_run_requires_a_workspace_argument(tmp_path: Path) -> None:

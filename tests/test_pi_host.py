@@ -12,7 +12,7 @@ from contextlib import suppress
 from hashlib import sha1, sha256
 from pathlib import Path
 from stat import S_IMODE
-from threading import Event
+from threading import Event, current_thread, main_thread
 from typing import TYPE_CHECKING, Protocol
 
 import pytest
@@ -670,6 +670,34 @@ def test_run_plugin_resumes_awaiting_on_verified_pi_branch(
     assert_reaped(pi_process)
 
 
+def test_run_plugin_rechecks_pins_before_restoring_skills_from_literal_round(
+    tmp_path: Path, pi_process: PiProcess
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    copy = run.directory / "skills" / "grilling" / "SKILL.md"
+    checked: list[bytes] = []
+
+    def alter_copy_on_second_answer() -> None:
+        if run.state()["turn_kind"] == "round":
+            checked.append(run.state_path.read_bytes())
+            copy.write_text("Different copied skill", encoding="utf-8")
+
+    console = FakeConsole(
+        answers=("/skill:grilling verbatim", ":listo"), on_ask=alter_copy_on_second_answer
+    )
+    result = run.invoke(pi_process.host(replies=(OPENING,)), console)
+
+    assert (result.status, result.exit_code) == ("blocked", 10)
+    assert result.reason == "Pi could not reopen the same verified session for the next turn"
+    assert checked == [run.state_path.read_bytes()]
+    assert len(pi_process.spawns()) == 2
+    assert [command["message"] for command in pi_process.commands("prompt")] == [
+        f"/skill:grilling {GOAL}",
+        "/skill:grilling verbatim",
+    ]
+    assert_reaped(pi_process)
+
+
 def test_run_plugin_detects_source_change_after_copy_before_spawning_pi(
     tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -786,23 +814,115 @@ def test_run_plugin_blocks_uncertain_turn_without_relaunching_or_resending(
     assert pi_process.log.read_bytes() == before
 
 
-def test_close_is_bounded_when_a_descendant_keeps_streaming_stdout(
-    pi_process: PiProcess,
-) -> None:
-    host = pi_process.started("stream-descendant-on-eof")
+@pytest.mark.parametrize(
+    "scenario",
+    ["stream-descendant-on-eof", "idle-descendant-on-eof", "partial-idle-descendant-on-eof"],
+)
+def test_close_requires_eof_even_after_reaping_pi(pi_process: PiProcess, scenario: str) -> None:
+    host = pi_process.started(scenario)
     started = time.monotonic()
-    with pytest.raises(skillrun.HostError):
-        host.close()
-    elapsed = time.monotonic() - started
-    assert_reaped(pi_process)
-    descendants = [
-        record["pid"] for record in read_records(pi_process.log) if record["event"] == "descendant"
-    ]
-    assert len(descendants) == 1
-    # Pi exits at once; the drain is bounded by command_timeout (1.2 s), far below the writer's 5 s.
-    assert elapsed < 3.0
-    with suppress(ProcessLookupError):
-        os.kill(descendants[0], signal.SIGKILL)
+    try:
+        with pytest.raises(skillrun.HostError, match="Pi RPC did not shut down cleanly"):
+            host.close()
+        assert_reaped(pi_process)
+        # The drain is bounded by command_timeout (1.2 s), not the descendant's 5 s.
+        assert time.monotonic() - started < 3.0
+    finally:
+        (descendant,) = (
+            record["pid"]
+            for record in read_records(pi_process.log)
+            if record["event"] == "descendant"
+        )
+        with suppress(ProcessLookupError):
+            os.kill(descendant, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("phase", ["close-entry", "child-wait", "reader-join"])
+def test_run_plugin_interrupted_close_reaps_and_preserves_the_checkpoint(
+    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    joining = phase == "reader-join"
+    scenario = "invalid-json-on-stdin-eof" if joining else "close-failure"
+    host = pi_process.host(scenario, fault_turn=2, replies=(OPENING, DISCOVERY))
+    assert isinstance(host, skillrun.PiHost)
+    checkpoint: list[bytes] = []
+    reader_parked = Event()
+    reader_can_resume = Event()
+    interrupted = False
+    record_output = host._record_output
+
+    def park_before_eof(record: dict[str, object]) -> None:
+        if record.get("type") == "before_stdin_eof":
+            reader_parked.set()
+            reader_can_resume.wait(4)
+        record_output(record)
+
+    def interrupt_close() -> None:
+        checkpoint.append(run.state_path.read_bytes())
+        assert run.state()["status"] == "settled"
+        assert host._process is not None
+        if phase == "close-entry":
+
+            def interrupt_on_dead(instance: skillrun.PiHost, name: str, value: object) -> None:
+                nonlocal interrupted
+                object.__setattr__(instance, name, value)
+                if instance is host and name == "_dead" and value is True and not interrupted:
+                    interrupted = True
+                    signal.raise_signal(signal.SIGINT)
+
+            monkeypatch.setattr(skillrun.PiHost, "__setattr__", interrupt_on_dead)
+        elif joining:
+            assert reader_parked.wait(4)
+            assert host._reader is not None
+            join = host._reader.join
+
+            def interrupt_join(timeout: float | None = None) -> None:
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt("interrupted during reader join")
+                reader_can_resume.set()
+                join(timeout)
+
+            monkeypatch.setattr(host._reader, "join", interrupt_join)
+        else:
+            wait = host._process.wait
+
+            def interrupt_wait(timeout: float | None = None) -> int:
+                nonlocal interrupted
+                if not interrupted and current_thread() is main_thread():
+                    interrupted = True
+                    raise KeyboardInterrupt("interrupted during child wait")
+                return wait(timeout)
+
+            monkeypatch.setattr(host._process, "wait", interrupt_wait)
+
+    if joining:
+        monkeypatch.setattr(host, "_record_output", park_before_eof)
+    started = time.monotonic()
+    try:
+        outcome = run.invoke(host, FakeConsole(on_confirm=interrupt_close))
+
+        assert interrupted
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "cancelled",
+            130,
+            "Run interrupted",
+        )
+        assert run.state_path.read_bytes() == checkpoint[0]
+        assert len(pi_process.commands("prompt")) == 2
+        assert time.monotonic() - started < 3.0
+        assert_reaped(pi_process)
+        assert host._reader is not None and not host._reader.is_alive()
+    finally:
+        # Keep the fake child and its reader bounded even when the regression fails.
+        reader_can_resume.set()
+        if host._process is not None:
+            host._process.kill()
+            host._process.wait(timeout=3)
+        if host._reader is not None:
+            host._reader.join(timeout=3)
 
 
 def test_run_plugin_blocks_a_truncated_record_at_stdin_eof(

@@ -1074,6 +1074,8 @@ def _bound_turn(
     cursor: str | None,
     user: Mapping[str, object],
     assistant: Mapping[str, object],
+    *,
+    literal_text: str | None = None,
 ) -> Turn:
     leaf = history.leaf_id
     if leaf is None or leaf == cursor:
@@ -1099,6 +1101,10 @@ def _bound_turn(
         or messages[0].get("content") != assistant["content"]
     ):
         raise HostError("Pi active branch does not match the settled turn")
+    if literal_text is not None:
+        persisted = messages[-1]["content"]
+        if persisted not in (literal_text, [{"type": "text", "text": literal_text}]):
+            raise HostError("Pi did not preserve the human answer in session history")
     blocks = assistant["content"]
     if not isinstance(blocks, list):
         raise HostError("Invalid final Pi message content")
@@ -1125,6 +1131,9 @@ class _PiLegacyTranscriptModeError(HostError):
     """A legacy transcript requires manual repair before Pi can start."""
 
 
+_PI_STDOUT_POLL_SECONDS = 0.1
+
+
 class PiHost:
     """Drive one Pi RPC child and verify turns against its active session branch."""
 
@@ -1145,12 +1154,17 @@ class PiHost:
         self._turn_timeout = turn_timeout
         self._command_timeout = command_timeout
         self._skills: dict[str, Path] = {}
+        self._skill_pins: dict[str, str] | None = None
+        self._session_file: Path | None = None
+        self._literal_profile = False
         self._process: subprocess.Popen[bytes] | None = None
         self._reader: Thread | None = None
         self._dead = False
         self._reap_lock = Lock()
         self._clean_exit: bool | None = None
         self._stop_reader = Event()
+        self._reader_done = Event()
+        self._stdout_eof = False
         self._received = Condition()
         self._pending: str | None = None
         self._failure: str | None = None
@@ -1176,7 +1190,7 @@ class PiHost:
         except (OSError, RuntimeError, ValueError) as exc:
             raise HostError("Unable to resolve a Pi path") from exc
 
-    def _check_session_storage(self) -> None:
+    def _prepare_session_storage(self, *, grilling: bool) -> Path | None:
         try:
             session_fd = _open_directory(None, str(self._session_dir), create=False)
             try:
@@ -1202,6 +1216,19 @@ class PiHost:
                         _check_open_private(fd, name)
                     finally:
                         os.close(fd)
+                if not grilling:
+                    return None
+                # Pi treats a prompt argument as a filename if it exists in the workspace.
+                # Supply a known private file rather than ambiguous inline text.
+                name = "grilling-host.txt"
+                _write_private_file(
+                    session_fd,
+                    name,
+                    b"When grilling needs a workspace fact, this host cannot delegate to a "
+                    b"sub-agent. Inspect the workspace directly with its read-only tools "
+                    b"(read, grep, find, ls). State what you could not verify; do not guess.",
+                )
+                return self._session_dir / name
             finally:
                 os.close(session_fd)
         except (OSError, _StateError) as exc:
@@ -1213,108 +1240,121 @@ class PiHost:
                 raise HostError("Pi host cannot be started again")
             if not re.fullmatch(_ID_PATTERN, self._session_id):
                 raise HostError("Invalid Pi session id")
-            try:
-                self._session_dir.mkdir(mode=0o700, exist_ok=True)
-                self._check_session_storage()
-                session_root = self._resolved_path(str(self._session_dir.parent))
-                session_root /= self._session_dir.name
-                if not self._command:
-                    raise HostError("Missing Pi executable")
-                argv = [
-                    *self._command,
-                    "--mode",
-                    "rpc",
-                    "--session-dir",
-                    str(self._session_dir),
-                    "--session-id",
-                    self._session_id,
-                    "--tools",
-                    "read,grep,find,ls",
-                    "--no-context-files",
-                    "--no-extensions",
-                    "--no-mcp",
-                    "--no-skills",
-                    "--no-prompt-templates",
-                ]
-                self._skills = dict(skills)
+            self._skills = dict(skills)
+            self._session_file = self._launch(literal_profile=False)
+
+    def _launch(self, *, literal_profile: bool) -> Path:
+        try:
+            self._session_dir.mkdir(mode=0o700, exist_ok=True)
+            guidance = self._prepare_session_storage(grilling="grilling" in self._skills)
+            session_root = self._resolved_path(str(self._session_dir.parent))
+            session_root /= self._session_dir.name
+            if not self._command:
+                raise HostError("Missing Pi executable")
+            argv = [
+                *self._command,
+                "--mode",
+                "rpc",
+                "--session-dir",
+                str(self._session_dir),
+                "--session-id",
+                self._session_id,
+                "--tools",
+                "read,grep,find,ls",
+                "--no-context-files",
+                "--no-extensions",
+                "--no-mcp",
+                "--no-skills",
+                "--no-prompt-templates",
+            ]
+            if guidance is not None:
+                argv.extend(("--append-system-prompt", str(guidance)))
+            if not literal_profile:
                 for path in self._skills.values():
                     argv.extend(("--skill", str(path)))
-                env = os.environ.copy()
-                for key in (
-                    "GH_TOKEN",
-                    "GITHUB_TOKEN",
-                    "GH_ENTERPRISE_TOKEN",
-                    "GITHUB_ENTERPRISE_TOKEN",
-                    "SSH_AUTH_SOCK",
-                ):
-                    env.pop(key, None)
-                # Pi runs with an explicit argv and no shell.
-                process = subprocess.Popen(  # nosec B603
-                    argv,
-                    cwd=self._cwd,
-                    env=env,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    bufsize=0,
-                    umask=0o077,
-                )
-                self._process = process
-                assert process.stdin is not None and process.stdout is not None
-                os.set_blocking(process.stdin.fileno(), False)
-                self._reader = Thread(
-                    target=self._read_output,
-                    args=(process, process.stdout),
-                    name="skillrun-pi-reader",
-                    daemon=True,
-                )
-                self._reader.start()
-            except (OSError, ValueError, RuntimeError) as exc:
-                raise HostError("Unable to launch Pi RPC") from exc
-
-            data = self._request("get_state")
-            session_file = data.get("sessionFile")
-            if (
-                data.get("sessionId") != self._session_id
-                or data.get("isStreaming") is not False
-                or not _has_text(session_file)
+            env = os.environ.copy()
+            for key in (
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_ENTERPRISE_TOKEN",
+                "GITHUB_ENTERPRISE_TOKEN",
+                "SSH_AUTH_SOCK",
             ):
-                raise HostError("Pi reported the wrong session state")
-            bound = self._resolved_path(session_file)
-            if session_root not in bound.parents:
-                raise HostError("Pi session file is outside its private directory")
+                env.pop(key, None)
+            # Pi runs with an explicit argv and no shell.
+            process = subprocess.Popen(  # nosec B603
+                argv,
+                cwd=self._cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                bufsize=0,
+                umask=0o077,
+            )
+            self._process = process
+            assert process.stdin is not None and process.stdout is not None
+            os.set_blocking(process.stdin.fileno(), False)
+            self._reader = Thread(
+                target=self._read_output,
+                args=(process, process.stdout),
+                name="skillrun-pi-reader",
+                daemon=True,
+            )
+            self._reader.start()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HostError("Unable to launch Pi RPC") from exc
+
+        data = self._request("get_state")
+        session_file = data.get("sessionFile")
+        if (
+            data.get("sessionId") != self._session_id
+            or data.get("isStreaming") is not False
+            or not _has_text(session_file)
+        ):
+            raise HostError("Pi reported the wrong session state")
+        bound = self._resolved_path(session_file)
+        if session_root not in bound.parents:
+            raise HostError("Pi session file is outside its private directory")
+        return bound
 
     def verify_skills(self, expected: Mapping[str, str]) -> None:
         with self._operation():
             self._live_process()
-            if self._skills.keys() != expected.keys():
-                raise HostError("Pi skill names do not match the pins")
-            remaining: dict[str, Path] = {}
-            try:
-                for name, path in self._skills.items():
-                    data = _read_skill_file(str(self._cwd / path), private=True)
-                    if not _matches_pin(data, expected[name]):
-                        raise HostError("Pi skill copy does not match its pin")
-                    remaining[f"skill:{name}"] = self._resolved_path(str(path))
-            except (OSError, _StateError, ValueError) as exc:
-                raise HostError("Unable to read a private Pi skill copy") from exc
+            self._verify_registered_skills(self._check_skill_copies(expected))
+            self._skill_pins = dict(expected)
 
-            commands = self._request("get_commands").get("commands")
-            if not isinstance(commands, list):
-                raise HostError("Invalid Pi command list")
-            for raw in commands:
-                command = _rpc_object(raw)
-                if command.get("source") != "skill":
-                    continue
-                registered_name = command.get("name")
-                source = _rpc_object(command.get("sourceInfo")).get("path")
-                if (
-                    not isinstance(registered_name, str)
-                    or not _has_text(source)
-                    or remaining.pop(registered_name, None) != self._resolved_path(source)
-                ):
-                    raise HostError("Unexpected Pi skill registration")
-            if remaining:
-                raise HostError("Missing Pi skill registration")
+    def _check_skill_copies(self, expected: Mapping[str, str]) -> dict[str, Path]:
+        if self._skills.keys() != expected.keys():
+            raise HostError("Pi skill names do not match the pins")
+        remaining: dict[str, Path] = {}
+        try:
+            for name, path in self._skills.items():
+                data = _read_skill_file(str(self._cwd / path), private=True)
+                if not _matches_pin(data, expected[name]):
+                    raise HostError("Pi skill copy does not match its pin")
+                remaining[f"skill:{name}"] = self._resolved_path(str(path))
+        except (OSError, _StateError, ValueError) as exc:
+            raise HostError("Unable to read a private Pi skill copy") from exc
+        return remaining
+
+    def _verify_registered_skills(self, remaining: dict[str, Path]) -> None:
+        commands = self._request("get_commands").get("commands")
+        if not isinstance(commands, list):
+            raise HostError("Invalid Pi command list")
+        for raw in commands:
+            command = _rpc_object(raw)
+            if command.get("source") != "skill":
+                continue
+            registered_name = command.get("name")
+            source = _rpc_object(command.get("sourceInfo")).get("path")
+            if (
+                not isinstance(registered_name, str)
+                or not _has_text(source)
+                or remaining.pop(registered_name, None) != self._resolved_path(source)
+            ):
+                raise HostError("Unexpected Pi skill registration")
+        if remaining:
+            raise HostError("Missing Pi skill registration")
 
     def _read_output(self, process: subprocess.Popen[bytes], stream: IO[bytes]) -> None:
         partial = bytearray()
@@ -1322,14 +1362,14 @@ class PiHost:
             with selectors.DefaultSelector() as selector:
                 selector.register(stream, selectors.EVENT_READ)
                 while True:
-                    if self._stop_reader.is_set() and monotonic() >= self._drain_deadline:
-                        # A descendant still writing after Pi exited: never wait unbounded.
-                        raise HostError("Pi RPC stdout stayed open after exit")
-                    if not selector.select(0.1):
-                        # Drain everything Pi wrote before exiting. Stop only once the
-                        # child is reaped and stdout is idle (e.g. a descendant keeps it open).
-                        if self._stop_reader.is_set():
-                            break
+                    timeout = _PI_STDOUT_POLL_SECONDS
+                    if self._stop_reader.is_set():
+                        remaining = self._drain_deadline - monotonic()
+                        if remaining <= 0:
+                            raise HostError("Pi RPC stdout stayed open after exit")
+                        timeout = min(timeout, remaining)
+                    if not selector.select(timeout):
+                        # An idle pipe may still be open in a descendant; keep looking for EOF.
                         continue
                     chunk = os.read(stream.fileno(), 65536)
                     if not chunk:
@@ -1353,14 +1393,19 @@ class PiHost:
         except (OSError, ValueError, RecursionError, HostError) as exc:
             with self._received:
                 # Only stdout EOF is expected once close() has asked Pi to exit.
-                if not (self._closing and isinstance(exc, _PiStdoutClosedError)):
+                if self._closing and isinstance(exc, _PiStdoutClosedError):
+                    self._stdout_eof = True
+                else:
                     self._failure = (
                         str(exc) if isinstance(exc, HostError) else "Invalid Pi RPC stream"
                     )
                 self._received.notify_all()
             self._reap(process)
         finally:
-            stream.close()
+            try:
+                stream.close()
+            finally:
+                self._reader_done.set()
 
     def _record_output(self, record: dict[str, object]) -> None:
         kind = record.get("type")
@@ -1467,6 +1512,46 @@ class PiHost:
     ) -> Turn:
         return self._prompt(text, on_prepared, on_accepted)
 
+    def _reopen_for_prompt(self, history: PiHistory, *, literal_profile: bool) -> None:
+        try:
+            if self._skill_pins is None or self._session_file is None or history.leaf_id is None:
+                raise HostError("Missing verified Pi session or skill evidence")
+            _active_branch(history, None)
+            # Close and join the old reader before reusing any transport state.
+            self.close()
+            self._process = None
+            self._reader = None
+            self._clean_exit = None
+            self._stop_reader.clear()
+            self._reader_done.clear()
+            self._stdout_eof = False
+            self._pending = None
+            self._response = None
+            self._events.clear()
+            self._collecting_turn = False
+            self._closing = False
+            self._drain_deadline = 0.0
+            self._dead = False
+
+            self._check_skill_copies(self._skill_pins)
+            if self._launch(literal_profile=literal_profile) != self._session_file:
+                raise HostError("Pi reopened a different session file")
+            if not literal_profile:
+                self.verify_skills(self._skill_pins)
+            elif self._request("get_commands").get("commands") != []:
+                raise HostError("Pi literal profile registered a prompt command")
+            reopened = self._history(None)
+            if reopened.leaf_id != history.leaf_id:
+                raise HostError("Pi reopened a different active leaf")
+            _active_branch(reopened, None)
+            self._literal_profile = literal_profile
+        except _PiLegacyTranscriptModeError:
+            raise
+        except HostError as exc:
+            raise _PiResumeBindingError(
+                "Pi could not reopen the same verified session for the next turn"
+            ) from exc
+
     def _prompt(
         self,
         text: str,
@@ -1474,6 +1559,7 @@ class PiHost:
         on_accepted: Callable[[], None],
         *,
         resume_leaf: str | None = None,
+        literal: bool = False,
     ) -> Turn:
         with self._operation():
             try:
@@ -1488,6 +1574,15 @@ class PiHost:
                 raise _PiResumeBindingError(
                     "Pi active branch does not reach the saved verified turn"
                 ) from exc
+            # Stock Pi matches a registered skill only at the start of the input
+            # and uses an ASCII space to separate the skill name from arguments.
+            command = text.partition(" ")[0]
+            might_expand = command.startswith("/skill:") and (
+                command.removeprefix("/skill:") in self._skills
+            )
+            literal_profile = literal and (self._literal_profile or might_expand)
+            if literal_profile != self._literal_profile:
+                self._reopen_for_prompt(history, literal_profile=literal_profile)
             cursor = history.leaf_id
             on_prepared(cursor)
             deadline = monotonic() + self._turn_timeout
@@ -1496,7 +1591,13 @@ class PiHost:
                 raise HostError("Pi did not start the prompt")
             on_accepted()
             user, assistant = self._turn_messages(deadline)
-            return _bound_turn(self._history(cursor), cursor, user, assistant)
+            return _bound_turn(
+                self._history(cursor),
+                cursor,
+                user,
+                assistant,
+                literal_text=text if literal else None,
+            )
 
     def _turn_messages(self, deadline: float) -> tuple[dict[str, object], dict[str, object]]:
         user = assistant = None
@@ -1528,7 +1629,9 @@ class PiHost:
 
     def _reap(self, process: subprocess.Popen[bytes]) -> bool:
         with self._reap_lock:
-            if self._clean_exit is None:
+            if self._clean_exit is not None:
+                return self._clean_exit
+            try:
                 if process.stdin is not None:
                     with suppress(OSError):
                         process.stdin.close()
@@ -1542,30 +1645,57 @@ class PiHost:
                     except subprocess.TimeoutExpired:
                         killed = True
                         process.kill()
-                        process.wait()
+                        try:
+                            process.wait(timeout=self._command_timeout)
+                        except subprocess.TimeoutExpired:
+                            return False
                 self._clean_exit = not killed and process.returncode == 0
-                self._drain_deadline = monotonic() + self._command_timeout
-                self._stop_reader.set()
-            return self._clean_exit
+                return self._clean_exit
+            finally:
+                if not self._stop_reader.is_set():
+                    self._drain_deadline = monotonic() + self._command_timeout
+                    self._stop_reader.set()
 
-    def _shutdown(self) -> bool:
-        self._dead = True
+    def _join_reader(self, process: subprocess.Popen[bytes]) -> bool:
+        reader = self._reader
+        if reader is None or reader.ident is None:
+            if process.stdout is not None:
+                process.stdout.close()
+            return False
+        deadline = self._drain_deadline + _PI_STDOUT_POLL_SECONDS
+        reader.join(timeout=max(0.0, deadline - monotonic()))
+        # On older Python versions, an interrupted join can incorrectly report a dead thread.
+        return self._reader_done.wait(max(0.0, deadline - monotonic())) and not reader.is_alive()
+
+    def _shutdown(self, *, closing: bool = False) -> bool:
         process = self._process
-        if process is None:
-            return True
-        clean_exit = self._reap(process)
-        if self._reader is not None and self._reader.ident is not None:
-            self._reader.join()
-        elif process.stdout is not None:
-            process.stdout.close()
-        return clean_exit
+        try:
+            self._dead = True
+            if process is None:
+                return True
+            if closing:
+                with self._received:
+                    self._closing = True
+            clean_exit = self._reap(process)
+            joined = self._join_reader(process)
+        except KeyboardInterrupt:
+            # The host is already dead to callers. Finish cleanup here, before
+            # propagating the interruption, rather than relying on a second close().
+            if process is None:
+                raise
+            with suppress(Exception, KeyboardInterrupt):
+                process.kill()
+            with suppress(Exception, KeyboardInterrupt):
+                self._reap(process)
+            with suppress(Exception, KeyboardInterrupt):
+                self._join_reader(process)
+            raise
+        return clean_exit and joined and self._stdout_eof
 
     def close(self) -> None:
         if self._dead:
             return
-        with self._received:
-            self._closing = True
-        clean_exit = self._shutdown()
+        clean_exit = self._shutdown(closing=True)
         # A fatal record seen after the last turn still invalidates the session.
         if not clean_exit or self._failure is not None:
             raise HostError("Pi RPC did not shut down cleanly")
@@ -1697,8 +1827,14 @@ def _send_turn(
         state = store.save(replace(state, status="accepted"))
 
     try:
-        if resume_leaf is not None and isinstance(host, PiHost):
-            turn = host._prompt(text, on_prepared, on_accepted, resume_leaf=resume_leaf)
+        if isinstance(host, PiHost):
+            turn = host._prompt(
+                text,
+                on_prepared,
+                on_accepted,
+                resume_leaf=resume_leaf,
+                literal=state.turn_kind == "round",
+            )
         else:
             turn = host.prompt(text, on_prepared, on_accepted)
     finally:
@@ -2079,7 +2215,12 @@ def _run_cli(args: argparse.Namespace) -> int:
         plugin,
         goal=args.goal,
         run_id=args.run_id,
-        host=PiHost(cwd=workspace, session_dir=run_dir / "pi-session", session_id=args.run_id),
+        host=PiHost(
+            cwd=workspace,
+            session_dir=run_dir / "pi-session",
+            # Pi requires an alphanumeric ending. Run directories remain keyed by the public ID.
+            session_id=_sha256_text(args.run_id) if args.run_id.endswith("-") else args.run_id,
+        ),
         console=TerminalConsole(stdin=sys.stdin, stderr=sys.stderr),
         workspace=workspace,
         state_root=run_dir.parent,

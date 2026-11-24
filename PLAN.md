@@ -98,8 +98,11 @@ para el contrato vigente por turno y sus reglas de recuperación.
 2. Mostrar cada respuesta del agente en consola; el usuario responde; repetir (rondas libres, Matt es dueño del árbol).
 3. El usuario escribe `:listo` → la app pide a la skill su síntesis de entendimiento compartido en un bloque ```json que cumpla el contrato del paso.
 4. La app muestra la síntesis y pregunta `¿Confirmas? [s/n]`. `n` → vuelve a rondas. `s` → recibo `done` con el ID del evento de confirmación de consola.
-5. El recibo guarda solo el SHA de la respuesta humana; el texto enviado
-   queda en el historial de Pi. Para citas del agente y retención de trazas,
+5. El recibo guarda solo el SHA de la respuesta humana; el historial de Pi
+   conserva el texto literal, incluso si empieza por `/skill:`. Una respuesta
+   humana no invoca una skill. Para evitar que Pi la expanda, el adaptador
+   puede cerrar el proceso y reabrir **la misma sesión** sin skills registradas.
+   Las invocaciones del motor usan las copias fijadas y verificadas. Para citas del agente y retención de trazas,
    ver el contrato aprobado de la Fase 4 (§5.11).
 
 ### 5.4 Pasos posteriores

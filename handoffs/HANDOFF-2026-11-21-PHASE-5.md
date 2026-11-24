@@ -58,7 +58,7 @@ Codex `gpt-6.1-sol` / `medium`.
   `SKILL.md` fijado ni se probó con Pi real.
 - **Fase 6 no iniciada.** Para retomarla en otro hilo, leer
   [PLAN.md §6](../PLAN.md#6-fases) y
-  [los prerrequisitos de la prueba real](../README.md#antes-de-la-fase-6-prueba-real).
+  [Prueba real (Fase 6)](../README.md#prueba-real-fase-6).
   Modelo previsto: Sonnet 5.5 / medio. La persona usuaria ejecuta Pi.
 
 ```text

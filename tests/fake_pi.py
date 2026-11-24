@@ -75,6 +75,11 @@ class Session:
         self.entries = read_records(self.path)[1:]
         self.leaf_id = self.entries[-1]["id"] if self.entries else None
         self.turns = 0
+        self.reply_offset = (
+            sum(entry.get("message", {}).get("role") == "user" for entry in self.entries)
+            if options.session_replies
+            else 0
+        )
         if not self.path.exists():
             append_record(
                 self.path,
@@ -127,6 +132,8 @@ class Session:
             other_dir.mkdir(exist_ok=True)
             session_file = other_dir / self.path.name
             session_file.write_bytes(self.path.read_bytes())
+        if scenario == "literal-wrong-file" and not self.options.skill and self.entries:
+            session_file = self.path.with_name("different.jsonl")
         self.respond(
             command,
             {
@@ -138,7 +145,17 @@ class Session:
 
     def get_commands(self, command: Record) -> None:
         if not self.options.skill:
-            self.respond(command, {"commands": []})
+            commands = []
+            scenario = self.options.scenario
+            if scenario in ("literal-leaked-skill", "literal-leaked-template"):
+                commands.append(
+                    {
+                        "name": "skill:grilling",
+                        "source": "skill" if scenario == "literal-leaked-skill" else "prompt",
+                        "sourceInfo": {"path": "unexpected"},
+                    }
+                )
+            self.respond(command, {"commands": commands})
             return
         skills: list[Record] = [
             {
@@ -183,7 +200,12 @@ class Session:
     def get_entries(self, command: Record) -> None:
         since = command.get("since")
         if since is None:
-            self.respond(command, {"entries": self.entries, "leafId": self.leaf_id})
+            entries, leaf = self.entries, self.leaf_id
+            if self.options.scenario == "literal-wrong-leaf" and not self.options.skill and entries:
+                # The expected turn still exists, but its exact active leaf changed.
+                leaf = "0000abcd"
+                entries = [*entries, {"type": "session_info", "id": leaf, "parentId": self.leaf_id}]
+            self.respond(command, {"entries": entries, "leafId": leaf})
             return
         for index, entry in enumerate(self.entries):
             if entry["id"] == since:
@@ -225,17 +247,37 @@ class Session:
             self.emit_turn(command, scenario)
         return True
 
+    def expand_skill_command(self, text: str) -> str:
+        # Like Pi, expand only a registered name at the start, delimited by ASCII space.
+        if not text.startswith("/skill:"):
+            return text
+        name, _, arguments = text[7:].partition(" ")
+        for skill_path in self.options.skill:
+            if skill_path.parent.name == name:
+                body = skill_path.read_text(encoding="utf-8").split("---", 2)[-1].strip()
+                block = (
+                    f'<skill name="{name}" location="{skill_path}">\n'
+                    f"References are relative to {skill_path.parent}.\n\n{body}\n</skill>"
+                )
+                return f"{block}\n\n{arguments.strip()}" if arguments.strip() else block
+        return text
+
     def emit_turn(self, command: Record, scenario: str) -> None:
         cursor = self.leaf_id
-        user = {"role": "user", "content": command["message"], "timestamp": MESSAGE_TIMESTAMP}
+        user = {
+            "role": "user",
+            "content": [text_block(self.expand_skill_command(command["message"]))],
+            "timestamp": MESSAGE_TIMESTAMP,
+        }
         if scenario == "expanded-prompt":
             user["content"] = [
                 text_block("Expanded skill instruction"),
                 text_block(command["message"]),
             ]
+        reply_index = self.reply_offset + self.turns - 1
         reply = (
-            self.options.reply[self.turns - 1]
-            if self.turns <= len(self.options.reply)
+            self.options.reply[reply_index]
+            if reply_index < len(self.options.reply)
             else PLAIN_REPLY
         )
         content = [text_block(reply)]
@@ -341,10 +383,12 @@ def main() -> int:
     parser.add_argument("--fault-turn", type=int, default=1)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--reply", action="append", default=[])
+    parser.add_argument("--session-replies", action="store_true")
     parser.add_argument("--mode", required=True, choices=["rpc"])
     parser.add_argument("--session-dir", required=True, type=Path)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--tools", required=True)
+    parser.add_argument("--append-system-prompt")
     parser.add_argument("--skill", type=Path, action="append", default=[])
     for flag in ("context-files", "extensions", "mcp", "skills", "prompt-templates"):
         parser.add_argument(f"--no-{flag}", action="store_true")
@@ -404,16 +448,25 @@ def main() -> int:
         # A complete-looking but unterminated record: no LF before a clean exit.
         emit_bytes(b'{"type":"queue_update"}')
         append_record(options.log, {"event": "truncated-record-written"})
-    if options.scenario == "stream-descendant-on-eof":
+    if options.scenario in (
+        "stream-descendant-on-eof",
+        "idle-descendant-on-eof",
+        "partial-idle-descendant-on-eof",
+    ):
+        if options.scenario == "partial-idle-descendant-on-eof":
+            emit_bytes(b'{"type":"queue_update"}')
         writer = os.fork()
         if writer == 0:
-            append_record(options.log, {"event": "descendant", "pid": os.getpid()})
-            deadline = time.monotonic() + 5
-            with suppress(OSError):
-                while time.monotonic() < deadline:
-                    os.write(1, b'{"type":"queue_update"}\n')
-                    time.sleep(0.001)
+            if options.scenario == "stream-descendant-on-eof":
+                deadline = time.monotonic() + 5
+                with suppress(OSError):
+                    while time.monotonic() < deadline:
+                        os.write(1, b'{"type":"queue_update"}\n')
+                        time.sleep(0.001)
+            else:
+                time.sleep(5)
             os._exit(0)
+        append_record(options.log, {"event": "descendant", "pid": writer})
     if options.scenario == "close-failure":
         # Leave time for the host's TERM/KILL sequence, with a cap if it never kills.
         time.sleep(8)

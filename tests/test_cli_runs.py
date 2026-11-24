@@ -55,7 +55,9 @@ class CLI:
             timeout=15,
         )
 
-    def run_plugin(self, *, answer: str = "") -> subprocess.CompletedProcess[str]:
+    def run_plugin(
+        self, *, answer: str = "", run_id: str = RUN_ID
+    ) -> subprocess.CompletedProcess[str]:
         return self.call(
             "run",
             str(self.run.plugin_path.relative_to(self.root)),
@@ -63,7 +65,8 @@ class CLI:
             GOAL,
             "--cwd",
             str(self.run.workspace.relative_to(self.root)),
-            *STATE_ARGS,
+            "--run-id",
+            run_id,
             answer=answer,
         )
 
@@ -110,10 +113,146 @@ def test_run_prints_only_final_validated_json_and_replays_without_pi(tmp_path: P
     flags = spawn["argv"]
     assert Path(flags[flags.index("--session-dir") + 1]) == cli.directory / "pi-session"
     assert flags[flags.index("--session-id") + 1] == RUN_ID
+    guidance = Path(flags[flags.index("--append-system-prompt") + 1])
+    assert guidance.parent == cli.directory / "pi-session"
+    fallback = guidance.read_text(encoding="utf-8")
+    assert "cannot delegate" in fallback and "read, grep, find, ls" in fallback
+    assert "could not verify" in fallback
 
     (cli.bin / "pi").unlink()
     assert response(cli.run_plugin(), 0) == data
     assert cli.log.read_bytes() == log
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_run_preserves_literal_rounds_and_resumes_engine_skill_expansion(
+    tmp_path: Path, resume: bool
+) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path, "complete"))
+    leading_space = "  /skill:grilling leave literal ñ  "
+    unregistered = "/skill:grilling\tleave literal"
+    registered = "/skill:grilling  keep literal café Ω  "
+    ordinary = "An ordinary answer in the literal profile."
+    answers = (leading_space, unregistered, registered, ordinary, "/skill:grilling")
+    cli.fake_pi(
+        "--session-replies",
+        "--reply",
+        OPENING,
+        "--reply",
+        "Next answer?",
+        "--reply",
+        "Next answer?",
+        "--reply",
+        "Next answer?",
+        "--reply",
+        "Next answer?",
+        "--reply",
+        "Ready yet?",
+        "--reply",
+        MULTI_STEP_DISCOVERY,
+        "--reply",
+        '```json\n{"evidence":{},"count":2}\n```',
+        "--reply",
+        '```json\n{"verified":true}\n```',
+    )
+
+    human_input = "\n".join(answers) + "\n"
+    finish = "  :listo  \ns\n"
+    if resume:
+        paused = cli.run_plugin(answer=human_input)
+        assert response(paused, 130)["status"] == "cancelled"
+        receipt = (cli.directory / "state.json").read_bytes()
+        assert json.loads(receipt)["answer_sha256"] == sha256(answers[-1].encode()).hexdigest()
+        assert all(answer.encode() not in receipt for answer in answers)
+        completed = cli.run_plugin(answer=finish)
+    else:
+        completed = cli.run_plugin(answer=human_input + finish)
+    assert response(completed, 0)["result"] == {"verified": True}
+
+    (transcript,) = (cli.directory / "pi-session").glob("*.jsonl")
+    with transcript.open(encoding="utf-8") as stream:
+        opening, *rounds, synthesis, investigate, summarize = [
+            message["content"][0]["text"]
+            for line in stream
+            if (message := json.loads(line).get("message", {})).get("role") == "user"
+        ]
+    assert opening.startswith('<skill name="grilling"') and opening.endswith(GOAL)
+    assert tuple(rounds) == answers
+    assert synthesis.startswith("The user ended the grilling rounds.")
+    assert investigate.startswith('<skill name="research"')
+    assert summarize.startswith('<skill name="summary"')
+
+    lifecycle = [
+        event
+        for line in cli.log.read_text().splitlines()
+        if (event := json.loads(line))["event"] in ("spawn", "eof")
+    ]
+    assert [event["event"] for event in lifecycle] == ["spawn", "eof"] * 3
+    normal, _, literal, _, resumed, _ = lifecycle
+    for spawn in (normal, literal, resumed):
+        assert {"--no-skills", "--no-prompt-templates", "--no-extensions", "--no-mcp"} <= set(
+            spawn["argv"]
+        )
+        assert "--append-system-prompt" in spawn["argv"]
+    assert "--skill" in normal["argv"] and "--skill" in resumed["argv"]
+    assert "--skill" not in literal["argv"]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["literal-wrong-file", "literal-wrong-leaf", "literal-leaked-skill", "literal-leaked-template"],
+)
+def test_run_blocks_before_dispatch_if_literal_profile_cannot_be_bound(
+    tmp_path: Path, scenario: str
+) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi("--scenario", scenario, "--reply", OPENING)
+    assert response(cli.run_plugin(), 130)["status"] == "cancelled"
+    receipt = cli.directory / "state.json"
+    transcript = cli.directory / "pi-session" / f"{RUN_ID}.jsonl"
+    checkpoint = receipt.read_bytes(), transcript.read_bytes()
+
+    result = response(cli.run_plugin(answer="/skill:grilling do not dispatch\n"), 10)
+
+    assert result["reason"] == "Pi could not reopen the same verified session for the next turn"
+    assert (receipt.read_bytes(), transcript.read_bytes()) == checkpoint
+    assert b"do not dispatch" not in cli.log.read_bytes()
+    assert not (cli.directory / "traces" / "discovery-1-2.json").exists()
+
+
+def test_run_does_not_settle_a_round_when_pi_rewrites_the_answer(tmp_path: Path) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi("--scenario", "expanded-prompt", "--fault-turn", "2", "--reply", OPENING)
+    answer = "  This must stay literal Ω.  "
+
+    result = response(cli.run_plugin(answer=f"{answer}\n"), 10)
+
+    assert result["reason"] == "Prompt delivery is uncertain"
+    receipt = (cli.directory / "state.json").read_bytes()
+    assert json.loads(receipt)["answer_sha256"] == sha256(answer.encode()).hexdigest()
+    assert answer.encode() not in receipt
+    assert not (cli.directory / "traces" / "discovery-1-2.json").exists()
+    assert cli.log.read_text().count("started-response") == 2
+
+
+@pytest.mark.parametrize("run_id", ["audit-", "a" * 63 + "-", "audit-1"])
+def test_run_resumes_the_same_pi_session_for_documented_ids(tmp_path: Path, run_id: str) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi("--reply", OPENING)
+    first = cli.run_plugin(run_id=run_id)
+    assert first.returncode == 130 and json.loads(first.stdout)["run_id"] == run_id
+
+    cli.fake_pi("--reply", DISCOVERY)
+    resumed = cli.run_plugin(run_id=run_id, answer=":listo\ns\n")
+    assert resumed.returncode == 0 and json.loads(resumed.stdout)["run_id"] == run_id
+    launches = [json.loads(line) for line in cli.log.read_text().splitlines()]
+    args = [event["argv"] for event in launches if event["event"] == "spawn"]
+    assert len(args) == 2
+    session_id, resumed_id = [argv[argv.index("--session-id") + 1] for argv in args]
+    assert session_id == resumed_id and session_id[-1].isalnum()
+    if not run_id.endswith("-"):
+        assert session_id == run_id
+    assert (cli.directory.parent / run_id / "state.json").is_file()
 
 
 def test_legacy_transcript_mode_reports_manual_recovery_and_preserves_resume(
