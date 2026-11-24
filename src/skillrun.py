@@ -1123,6 +1123,10 @@ class _PiStdoutClosedError(HostError):
     """Pi closed stdout, which is only expected during close()."""
 
 
+class _PiShutdownInterrupted(KeyboardInterrupt):
+    """An interrupted Pi shutdown also recorded a fatal RPC failure."""
+
+
 class _PiResumeBindingError(HostError):
     """Pi could not prove continuity with a saved turn before sending a prompt."""
 
@@ -1516,7 +1520,7 @@ class PiHost:
         try:
             if self._skill_pins is None or self._session_file is None or history.leaf_id is None:
                 raise HostError("Missing verified Pi session or skill evidence")
-            _active_branch(history, None)
+            active_branch = json.dumps(_active_branch(history, None), sort_keys=True)
             # Close and join the old reader before reusing any transport state.
             self.close()
             self._process = None
@@ -1541,9 +1545,9 @@ class PiHost:
             elif self._request("get_commands").get("commands") != []:
                 raise HostError("Pi literal profile registered a prompt command")
             reopened = self._history(None)
-            if reopened.leaf_id != history.leaf_id:
-                raise HostError("Pi reopened a different active leaf")
-            _active_branch(reopened, None)
+            # Compare JSON values, not object key order or inactive history entries.
+            if json.dumps(_active_branch(reopened, None), sort_keys=True) != active_branch:
+                raise HostError("Pi reopened a different active branch")
             self._literal_profile = literal_profile
         except _PiLegacyTranscriptModeError:
             raise
@@ -1670,19 +1674,23 @@ class PiHost:
     def _shutdown(self, *, closing: bool = False) -> bool:
         process = self._process
         try:
-            self._dead = True
-            if process is None:
-                return True
             if closing:
                 with self._received:
                     self._closing = True
+            self._dead = True
+            if process is None:
+                return True
             clean_exit = self._reap(process)
             joined = self._join_reader(process)
         except KeyboardInterrupt:
-            # The host is already dead to callers. Finish cleanup here, before
-            # propagating the interruption, rather than relying on a second close().
+            # Finish cleanup before propagating the interruption. EOF caused
+            # by intentional shutdown must not be recorded as a fatal failure.
+            self._dead = True
             if process is None:
                 raise
+            if closing:
+                with self._received:
+                    self._closing = True
             with suppress(Exception, KeyboardInterrupt):
                 process.kill()
             with suppress(Exception, KeyboardInterrupt):
@@ -1695,7 +1703,12 @@ class PiHost:
     def close(self) -> None:
         if self._dead:
             return
-        clean_exit = self._shutdown(closing=True)
+        try:
+            clean_exit = self._shutdown(closing=True)
+        except KeyboardInterrupt as exc:
+            if self._failure is not None:
+                raise _PiShutdownInterrupted from exc
+            raise
         # A fatal record seen after the last turn still invalidates the session.
         if not clean_exit or self._failure is not None:
             raise HostError("Pi RPC did not shut down cleanly")
@@ -1797,7 +1810,6 @@ def _send_turn(
     resume_leaf: str | None = None,
 ) -> _RunState:
     prompt_sha256 = _sha256_text(text)
-    workspace_sha256 = workspace_digest(workspace)
     active = True
     invalid_callback = False
 
@@ -1810,6 +1822,8 @@ def _send_turn(
     def on_prepared(cursor: str | None) -> None:
         nonlocal state
         require_phase("ready", valid=cursor is None or _has_text(cursor))
+        # Host preparation, including a profile switch, is outside the turn.
+        workspace_sha256 = workspace_digest(workspace)
         state = store.save(
             replace(
                 state,
@@ -1848,7 +1862,7 @@ def _send_turn(
         turn.leaf_id.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise _InvalidTurnError from exc
-    if workspace_digest(workspace) != workspace_sha256:
+    if workspace_digest(workspace) != state.workspace_sha256:
         raise WorkspaceSnapshotError("Workspace changed during agent turn")
     response_sha256 = store.write_trace(state, turn.text)
     return store.save(
@@ -1972,7 +1986,7 @@ def _advance_run(
                 if last:
                     try:
                         session.close()
-                    except Exception:
+                    except (Exception, _PiShutdownInterrupted):
                         _block_step(store, state, "Host shutdown failed")
                         raise
                 return store.save(replace(state, status="done", confirmation_event_id=event_id))

@@ -753,8 +753,9 @@ def test_run_plugin_blocks_invalid_rpc_after_verified_history(
     assert_reaped(pi_process)
 
 
+@pytest.mark.parametrize("interrupt", [False, True], ids=["normal-join", "interrupted-join"])
 def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
-    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, pi_process: PiProcess, monkeypatch: pytest.MonkeyPatch, interrupt: bool
 ) -> None:
     run = RunFiles(tmp_path, workspace=pi_process.cwd)
     host = pi_process.host("invalid-json-on-stdin-eof", fault_turn=2, replies=(OPENING, DISCOVERY))
@@ -762,6 +763,7 @@ def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
     reader_parked = Event()
     reader_can_resume = Event()
     resumed_for_join: list[bool] = []
+    interrupted = False
     record_output = host._record_output
 
     def park_before_eof(record: dict[str, object]) -> None:
@@ -776,21 +778,105 @@ def test_run_plugin_blocks_invalid_rpc_on_stdin_eof_with_reader_busy(
         join = host._reader.join
 
         def resume_and_join(timeout: float | None = None) -> None:
+            nonlocal interrupted
+            if interrupt and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt("interrupted during reader join")
             reader_can_resume.set()
             join(timeout)
 
         monkeypatch.setattr(host._reader, "join", resume_and_join)
 
     monkeypatch.setattr(host, "_record_output", park_before_eof)
-    outcome = run.invoke(host, FakeConsole(on_confirm=hold_reader_until_join))
+    try:
+        outcome = run.invoke(host, FakeConsole(on_confirm=hold_reader_until_join))
+    finally:
+        reader_can_resume.set()
 
+    assert interrupted is interrupt
     assert resumed_for_join == [True]
     assert [record["event"] for record in read_records(pi_process.log)][-2:] == [
         "eof",
         "invalid-json-written",
     ]
     assert_reaped(pi_process)
-    assert (outcome.status, outcome.exit_code, run.state()["status"]) == ("blocked", 10, "blocked")
+    assert host._reader is not None and not host._reader.is_alive()
+    if interrupt:
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "cancelled",
+            130,
+            "Run interrupted",
+        )
+    else:
+        assert (outcome.status, outcome.exit_code) == ("blocked", 10)
+    state = run.state()
+    assert (state["status"], state.get("reason")) == ("blocked", "Host shutdown failed")
+    assert run.trace_path(turn=2).is_file()
+    log = pi_process.log.read_bytes()
+    resumed = run.invoke(pi_process.host())
+    assert (resumed.status, resumed.exit_code, resumed.reason) == (
+        "blocked",
+        10,
+        "Host shutdown failed",
+    )
+    assert run.state() == state
+    assert pi_process.log.read_bytes() == log
+
+
+@pytest.mark.parametrize("edit_after_dispatch", [False, True], ids=["during-reopen", "after-send"])
+def test_workspace_snapshot_is_bound_to_prompt_dispatch(
+    tmp_path: Path,
+    pi_process: PiProcess,
+    monkeypatch: pytest.MonkeyPatch,
+    edit_after_dispatch: bool,
+) -> None:
+    run = RunFiles(tmp_path, workspace=pi_process.cwd)
+    path = run.workspace / "working-file"
+    path.write_text("Before edit", encoding="utf-8")
+    before_edit = skillrun.workspace_digest(run.workspace)
+    answer = "/skill:grilling Keep this answer literal."
+    host = pi_process.host(replies=(OPENING,))
+    assert isinstance(host, skillrun.PiHost)
+    request = host._request
+    edits: list[str] = []
+
+    def request_with_edit(
+        kind: str, *, deadline: float | None = None, **fields: object
+    ) -> dict[str, object]:
+        result = request(kind, deadline=deadline, **fields)
+        # These replies acknowledge the literal profile registration and prompt dispatch.
+        if edit_after_dispatch and kind == "prompt" and fields.get("message") == answer:
+            assert result["disposition"] == "started"
+            assert run.state()["status"] == "prepared"
+        elif not edit_after_dispatch and kind == "get_commands" and result.get("commands") == []:
+            assert run.state()["status"] == "awaiting"
+        else:
+            return result
+        path.write_text("After edit", encoding="utf-8")
+        edits.append(skillrun.workspace_digest(run.workspace))
+        return result
+
+    monkeypatch.setattr(host, "_request", request_with_edit)
+    outcome = run.invoke(host, FakeConsole(answers=(answer, EOFError())))
+
+    (after_edit,) = edits
+    assert before_edit != after_edit
+    assert [command["message"] for command in pi_process.commands("prompt")][-1] == answer
+    state = run.state()
+    assert state["turn"] == 2
+    if edit_after_dispatch:
+        assert (outcome.status, outcome.exit_code, outcome.reason) == (
+            "blocked",
+            10,
+            "Workspace changed during agent turn",
+        )
+        assert (state["status"], state["workspace_sha256"]) == ("blocked", before_edit)
+        assert not run.trace_path(turn=2).exists()
+    else:
+        assert (outcome.status, outcome.exit_code) == ("cancelled", 130)
+        assert (state["status"], state["workspace_sha256"]) == ("awaiting", after_edit)
+        assert run.trace_path(turn=2).is_file()
+    assert_reaped(pi_process)
 
 
 @pytest.mark.parametrize("scenario", ["eof-before-response", "hang"], ids=["prepared", "accepted"])
@@ -843,7 +929,7 @@ def test_run_plugin_interrupted_close_reaps_and_preserves_the_checkpoint(
 ) -> None:
     run = RunFiles(tmp_path, workspace=pi_process.cwd)
     joining = phase == "reader-join"
-    scenario = "invalid-json-on-stdin-eof" if joining else "close-failure"
+    scenario = "clean-reader-on-stdin-eof" if joining else "close-failure"
     host = pi_process.host(scenario, fault_turn=2, replies=(OPENING, DISCOVERY))
     assert isinstance(host, skillrun.PiHost)
     checkpoint: list[bytes] = []
@@ -915,6 +1001,11 @@ def test_run_plugin_interrupted_close_reaps_and_preserves_the_checkpoint(
         assert time.monotonic() - started < 3.0
         assert_reaped(pi_process)
         assert host._reader is not None and not host._reader.is_alive()
+        log = pi_process.log.read_bytes()
+        resumed = run.invoke(pi_process.host())
+        assert (resumed.status, resumed.exit_code) == ("complete", 0)
+        assert run.state()["status"] == "complete"
+        assert pi_process.log.read_bytes() == log
     finally:
         # Keep the fake child and its reader bounded even when the regression fails.
         reader_can_resume.set()

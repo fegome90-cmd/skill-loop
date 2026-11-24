@@ -200,7 +200,14 @@ def test_run_preserves_literal_rounds_and_resumes_engine_skill_expansion(
 
 @pytest.mark.parametrize(
     "scenario",
-    ["literal-wrong-file", "literal-wrong-leaf", "literal-leaked-skill", "literal-leaked-template"],
+    [
+        "literal-wrong-file",
+        "literal-wrong-leaf",
+        "literal-leaked-skill",
+        "literal-leaked-template",
+        "literal-rewritten-ancestor",
+        "literal-retyped-entry",
+    ],
 )
 def test_run_blocks_before_dispatch_if_literal_profile_cannot_be_bound(
     tmp_path: Path, scenario: str
@@ -218,6 +225,20 @@ def test_run_blocks_before_dispatch_if_literal_profile_cannot_be_bound(
     assert (receipt.read_bytes(), transcript.read_bytes()) == checkpoint
     assert b"do not dispatch" not in cli.log.read_bytes()
     assert not (cli.directory / "traces" / "discovery-1-2.json").exists()
+
+
+def test_run_accepts_equivalent_active_branch_despite_off_branch_entries(tmp_path: Path) -> None:
+    cli = CLI(tmp_path, RunFiles(tmp_path))
+    cli.fake_pi("--scenario", "literal-equivalent-branch", "--reply", OPENING)
+    assert response(cli.run_plugin(), 130)["status"] == "cancelled"
+
+    result = response(cli.run_plugin(answer="/skill:grilling send this literally\n"), 130)
+
+    assert result["reason"] == "Run interrupted"
+    receipt = json.loads((cli.directory / "state.json").read_bytes())
+    assert (receipt["status"], receipt["turn"]) == ("awaiting", 2)
+    assert b"send this literally" in cli.log.read_bytes()
+    assert (cli.directory / "traces" / "discovery-1-2.json").is_file()
 
 
 def test_run_does_not_settle_a_round_when_pi_rewrites_the_answer(tmp_path: Path) -> None:

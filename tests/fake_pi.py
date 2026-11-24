@@ -201,10 +201,29 @@ class Session:
         since = command.get("since")
         if since is None:
             entries, leaf = self.entries, self.leaf_id
-            if self.options.scenario == "literal-wrong-leaf" and not self.options.skill and entries:
-                # The expected turn still exists, but its exact active leaf changed.
-                leaf = "0000abcd"
-                entries = [*entries, {"type": "session_info", "id": leaf, "parentId": self.leaf_id}]
+            if not self.options.skill and entries:
+                scenario = self.options.scenario
+                if scenario == "literal-wrong-leaf":
+                    # The expected turn still exists, but its exact active leaf changed.
+                    leaf = "0000abcd"
+                    entries = [
+                        *entries,
+                        {"type": "session_info", "id": leaf, "parentId": self.leaf_id},
+                    ]
+                elif scenario == "literal-rewritten-ancestor":
+                    first, *rest = entries
+                    message = first["message"] | {"content": [text_block("Rewritten ancestor")]}
+                    entries = [first | {"message": message}, *rest]
+                elif scenario == "literal-retyped-entry":
+                    *rest, last = entries
+                    message = last["message"] | {"timestamp": float(last["message"]["timestamp"])}
+                    entries = [*rest, last | {"message": message}]
+                elif scenario == "literal-equivalent-branch":
+                    off_branch = {"type": "session_info", "id": "0000abcd", "parentId": None}
+                    entries = [
+                        off_branch,
+                        *(dict(reversed(item.items())) for item in reversed(entries)),
+                    ]
             self.respond(command, {"entries": entries, "leafId": leaf})
             return
         for index, entry in enumerate(self.entries):
@@ -435,7 +454,10 @@ def main() -> int:
                         raise RuntimeError("Supervisor did not reach confirmation")
                     time.sleep(0.01)
                 emit_bytes(BAD_WIRE["invalid-json"])
-            if after_fault_turn and options.scenario == "invalid-json-on-stdin-eof":
+            if after_fault_turn and options.scenario in (
+                "invalid-json-on-stdin-eof",
+                "clean-reader-on-stdin-eof",
+            ):
                 session.emit({"type": "before_stdin_eof"})
         else:
             session.respond(command, error="Unsupported fake Pi command")

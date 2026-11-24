@@ -221,7 +221,9 @@ los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
   Timeout por turno. Todo fallo recoge al hijo y deja la instancia inutilizable.
 - `history(cursor)` solo envía `get_entries` y no acredita un `agent_settled`.
   `close()` escala stdin → SIGTERM → SIGKILL y falla si hubo salida forzada,
-  código distinto de cero o un error de protocolo registrado.
+  código distinto de cero o un error de protocolo registrado. Si Ctrl-C
+  interrumpe el cierre, un error RPC fatal ya registrado deja el paso
+  bloqueado; sin ese error, el turno asentado puede reanudarse.
 - Detalle y evidencia: [registro de Fase 3](odd/tasks/phase-3-pi-rpc.md).
 
 ### 5.11 Contrato aprobado de la Fase 4 (grilling 2026-11-21)
@@ -245,10 +247,14 @@ los códigos y la recuperación, ver el [contrato de la CLI](README.md#cli).
   con `event_id`. Rondas libres.
 - Relanzar en `awaiting` re-muestra la última respuesta verificada y pregunta.
   Si la rama activa de Pi no alcanza ese turno, el motor bloquea el envío
-  y conserva el recibo en `awaiting`.
+  y conserva el recibo en `awaiting`. Al cambiar de perfil, deben coincidir
+  las entradas de la rama activa antes y después de reabrir Pi: conservar
+  solo los identificadores no basta.
   `reconcile retry` de una ronda o síntesis incierta vuelve a `awaiting`.
 - Snapshot SHA-256 del contenido de todo el árbol (incluido `.git`, sin
   exclusiones, symlinks por `readlink`) antes y después de **cada turno**.
+  El primer snapshot se toma tras preparar el host (incluida la reapertura
+  de Pi) y antes de guardar `prepared` y enviar el prompt.
   Una raíz symlink se rechaza antes de iniciar el host; un archivo especial
   o ilegible bloquea antes del envío. Si falla un turno en vuelo o el
   relanzamiento encuentra un recibo `prepared` o `accepted`, se compara el
