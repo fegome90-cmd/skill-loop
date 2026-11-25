@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="362" viewBox="0 0 900 362" role="img" aria-labelledby="title desc">
+  <title id="title">Qué acredita un recibo de turno</title>
+  <desc id="desc">Prepared registra el turno antes del envío. Accepted indica que Pi confirmó el inicio. Settled verifica la respuesta con la rama activa del historial. Una entrega incierta no se reenvía automáticamente.</desc>
+  <rect width="900" height="362" rx="16" fill="#101e29"/>
+  <path d="M42 21H858V330l-12 10-12-10-12 10-12-10-12 10-12-10-12 10-12-10-12 10-12-10H162l-12 10-12-10-12 10-12-10-12 10-12-10-12 10-12-10-12 10-12-10z" fill="#f5ecda"/>
+  <g font-family="ui-monospace,Menlo,Consolas,monospace" fill="#274348">
+    <text x="72" y="63" font-size="21" font-weight="bold" letter-spacing="2">RECIBO DE TURNO</text>
+    <text x="828" y="63" text-anchor="end" font-size="19">skillrun / Pi RPC</text>
+    <path d="M72 85H828" stroke="#718884" stroke-dasharray="7 5"/>
+    <path d="M85 120v129" fill="none" stroke="#45766b" stroke-width="3"/>
+    <circle cx="85" cy="126" r="9" fill="#45766b"/>
+    <path d="m85 176 12 12-12 12-12-12z" fill="#b27c27"/>
+    <rect x="76" y="242" width="18" height="18" rx="2" fill="#45766b"/>
+    <g font-size="32" font-weight="bold">
+      <text x="116" y="136">prepared</text>
+      <text x="116" y="199">accepted</text>
+      <text x="116" y="262">settled</text>
+    </g>
+  </g>
+  <g font-family="system-ui,sans-serif" font-size="31" fill="#173239">
+    <text x="357" y="136">Recibo antes del envío</text>
+    <text x="357" y="199">Pi confirma el inicio</text>
+    <text x="357" y="262">Respuesta verificada</text>
+  </g>
+  <path d="M72 293H828" stroke="#718884" stroke-dasharray="7 5"/>
+</svg>

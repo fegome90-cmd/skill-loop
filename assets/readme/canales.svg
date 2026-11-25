@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="72" viewBox="0 0 900 72" role="img" aria-labelledby="title"><title id="title">Canales de la CLI: respuestas por stdin, JSON en stdout y avisos en stderr.</title><rect width="900" height="72" rx="9" fill="#263744"/>
+<g transform="translate(24 24)" fill="none" stroke="#f6ca75" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12h14m-6-6 6 6-6 6m8-15h5v18h-5"/></g><text x="64" y="45" font-family="system-ui,sans-serif" font-weight="650" font-size="26" fill="#f5f5eb">stdin · entrada</text>
+<path d="M300 17v38" stroke="#f5f5eb" opacity=".32"/>
+<g transform="translate(324 24)" fill="none" stroke="#f6ca75" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2H5v7l-3 3 3 3v7h3m8-20h3v7l3 3-3 3v7h-3"/></g><text x="364" y="45" font-family="system-ui,sans-serif" font-weight="650" font-size="26" fill="#f5f5eb">stdout · JSON</text>
+<path d="M600 17v38" stroke="#f5f5eb" opacity=".32"/>
+<g transform="translate(624 24)" fill="none" stroke="#f6ca75" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h20v14H9l-6 5v-5H2zM7 8h10M7 12h7"/></g><text x="664" y="45" font-family="system-ui,sans-serif" font-weight="650" font-size="26" fill="#f5f5eb">stderr · avisos</text>
+</svg>

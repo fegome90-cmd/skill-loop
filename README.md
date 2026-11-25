@@ -1,171 +1,142 @@
 # skillrun
 
-Ejecución determinista de N skills en orden, con `grilling` (Matt Pocock) como
-discovery obligatorio. Una CLI en Python estándar lanza y controla al agente
-(Pi RPC primero) y lo obliga a invocar las skills de un plugin una a una.
+![Una sesión, skills en orden. Ilustración de un secuenciador con una tecla de confirmación y una tira de recibos.](assets/readme/portada.webp)
 
-**Estado: v0.1.0 — CLI de Fase 5.** El flujo se verifica con un host falso
-y con Pi falso como subproceso. Un run real con Pi 1.6.0 se registró en la Fase 6.
-El alcance está en [PLAN.md](PLAN.md); la entrega del motor está en el
-[handoff de Fase 4](handoffs/HANDOFF-2026-11-21-PHASE-4.md).
+Una CLI para ejecutar skills de Pi en orden. Primero defines el objetivo con el agente;
+solo cuando confirmas su síntesis pasa a la siguiente skill. Si un envío se interrumpe
+y no se sabe si Pi lo recibió, `skillrun` se detiene en lugar de repetirlo.
 
-Repositorio: `skill-loop`. Producto, CLI y módulo: `skillrun`.
+![Ficha técnica: v0.1.0 · Python 3.12 o posterior · licencia MIT.](assets/readme/ficha.svg)
 
-## Qué existe
+**Fase 6 integrada en `main`.** [Primer uso](#primer-uso) · [Cómo funciona](#cómo-funciona) · [CLI](#cli) · [Prueba real](#prueba-real-fase-6)
 
-- Proyecto Python `>=3.12` gestionado con `uv`; runtime solo stdlib.
-- Módulo único `src/skillrun.py` y console script `skillrun`.
-- Plugin de ejemplo `plugins/github-gateway/plugin.json` (pins fijados en la Fase 6;
-  `validate` lo acepta).
-- 37 skills de Matt Pocock vendorizadas en `.agents/skills/`, fijadas por git
-  blob en `.agents/skills-lock.json`.
-- [Skill de entrada](.agents/skills/skillrun/SKILL.md) para dirigir a la
-  persona usuaria a la CLI; no ejecuta el run por ella.
-- Stack de calidad replicado de `constitucion-ai` y snapshot de la Constitución
-  v1.1 con lock de procedencia.
+## Primer uso
+
+Desde la raíz del repositorio, con Python 3.12 o posterior y `uv`:
+
+```bash
+make install
+uv run skillrun validate plugins/github-gateway/plugin.json
+```
+
+Esto **no inicia Pi**. Comprueba el esquema del plugin y el formato de sus pins
+(las huellas que identifican cada versión de las skills). La salida estándar es una línea JSON:
+
+```json
+{"ok": true, "plugin_id": "github-gateway", "digest": "6c13251d4e8775c2df6cbf4bfd7da1bc2ecff1956fa978412047f31574701501"}
+```
+
+Para ejecutar el flujo necesitas Pi en el `PATH` y un proveedor configurado.
+Este ejemplo inspecciona el checkout actual: no lo edites mientras el agente trabaja.
+
+```bash
+uv run skillrun run plugins/github-gateway/plugin.json \
+  --goal "Identificar cómo se prueba este repositorio" \
+  --cwd . --run-id diagnostico-01
+```
+
+Responde al agente por la terminal. Una respuesta como `/skill:grilling ejemplo`
+queda como texto literal en el historial de Pi; no invoca la skill. Escribe
+`:listo` para pedir la síntesis: `s` la confirma y `n` vuelve a las preguntas.
+
+## Cómo funciona
+
+![Flujo del plugin github-gateway: grilling delimita el objetivo, la persona confirma y github-project inspecciona el checkout en la misma sesión de Pi.](assets/readme/flujo.svg)
+
+El [plugin de ejemplo](plugins/github-gateway/plugin.json) empieza con `grilling`.
+Tras tu confirmación, `github-project` inspecciona el checkout y devuelve un
+diagnóstico con referencias a archivos. Trabaja en la misma sesión de Pi con
+`read`, `grep`, `find` y `ls`: no necesita `gh` ni escribe en GitHub.
+El host le indica cómo consultar los archivos sin delegar en subagentes, en
+lugar de cargar un `APPEND_SYSTEM.md` del proyecto o del usuario.
 
 ## CLI
 
-Después de `make install`, desde la raíz del proyecto:
+![Canales de la CLI: stdin para la entrada, stdout para el JSON y stderr para los avisos.](assets/readme/canales.svg)
+
+| Comando | Cuándo usarlo |
+| --- | --- |
+| `validate` | Antes de ejecutar: comprueba el esquema del plugin sin leer los archivos de las skills. |
+| `run` | Inicia o retoma la ejecución. Verifica las copias de las skills contra sus pins antes de usarlas. |
+| `status` | Consulta el último checkpoint sin iniciar Pi ni modificar el estado. |
+| `reconcile` | Decide qué hacer con un turno cuya entrega es incierta. No reenvía el prompt. |
+
+`run`, `status` y `reconcile` devuelven una línea JSON en stdout con
+`run_id`, `status`, `exit_code`, `step_id` y `reason`. Las preguntas y los avisos
+van a stderr. Al completar el flujo, `result` contiene el último bloque JSON del paso
+final, validado contra el contrato y el recibo. Se rechazan los números no finitos,
+también dentro de objetos y listas. Repetir un run completo con los mismos
+parámetros verifica el resultado guardado sin iniciar Pi.
+
+### Consultar y recuperar una ejecución
+
+![Recibo de turno: prepared antes del envío, accepted cuando Pi confirma el inicio y settled cuando se verifica la respuesta en el historial.](assets/readme/recibo.svg)
+
+El recibo distingue **preparar un envío**, **recibir el acuse de Pi** y
+**verificar la respuesta** en el historial. Para consultar el último estado:
 
 ```bash
-uv run skillrun validate <plugin.json>
-uv run skillrun run <plugin.json> --goal "<objetivo>" --cwd <repo> --run-id <id>
-uv run skillrun status --run-id <id>
-uv run skillrun reconcile --run-id <id>
+uv run skillrun status --run-id diagnostico-01
 ```
 
-- `validate` solo comprueba el esquema y el formato de los pins. No abre
-  `SKILL.md` ni inicia Pi. Su JSON incluye `ok` y `plugin_id`/`digest` o
-  `errors`.
-- `run` comprueba los pins antes de iniciar Pi y usa `--cwd` tanto para Pi
-  como para el snapshot. En Pi, la skill de grilling no delega: para
-  consultar el checkout dispone de `read`, `grep`, `find` y `ls`.
-  El host pasa esta instrucción explícitamente, en lugar de cargar un
-  `APPEND_SYSTEM.md` del proyecto o del usuario. Durante el grilling,
-  responde por stdin. Si escribes `/skill:grilling ejemplo` como respuesta,
-  Pi lo guarda como texto literal: no ejecuta la skill. Escribe `:listo`
-  para pedir la síntesis y confirma con `s` para avanzar.
-  Al completar, el JSON incluye `result`: el último bloque JSON del paso
-  final, validado contra su contrato y el recibo. Al volver a ejecutar un
-  run completo con los mismos parámetros, no se inicia Pi; si falta el
-  recibo final verificable, no se devuelve un resultado.
-- `status` consulta el checkpoint persistido sin ejecutar Pi ni cambiar el
-  estado. Incluye `revision`, `attempt`, `turn` y `reconcilable` si hay
-  un checkpoint legible. No comprueba la traza del resultado final.
-- `reconcile` solo actúa cuando hay un turno bloqueado por entrega
-  incierta. Muestra el recibo en stderr y pide `reintentar` o `abandonar`
-  en stdin. Si cambia la revisión antes de aplicar la decisión, no la
-  registra. `reintentar` habilita el intento, pero no envía nada: vuelve
-  a ejecutar `run` con los mismos parámetros. `abandonar` cancela el run.
-  Ctrl-C o fin de entrada sin decisión no modifican el checkpoint.
-  Si `status` indica `prepared` o `accepted` tras una caída, vuelve a
-  ejecutar `run` para que el motor clasifique el turno sin reenviarlo.
+Si el recibo legible indica `prepared` o `accepted` tras una caída, repite el
+comando `run` original: el motor clasifica el turno sin reenviarlo. Si el estado
+indica `reconcilable: true`, usa:
 
-Cada ejecución operativa emite una sola línea JSON en stdout. En
-`run`, `status` y `reconcile` incluye `run_id`, `status`, `exit_code`,
-`step_id` y `reason` (los dos últimos pueden ser `null`). El texto del
-grilling, las preguntas y los avisos van a stderr. `--help` muestra ayuda.
+```bash
+uv run skillrun reconcile --run-id diagnostico-01
+```
 
-| Código | Significado |
+`reintentar` habilita otro intento; **solo un nuevo `run` lo envía**.
+`abandonar` cancela la ejecución. Si el recibo cambia mientras decides, o si
+interrumpes la consulta sin responder, no se registra la decisión.
+`status` informa el estado persistido; no verifica por sí solo la traza final.
+
+| Salida | Significado |
 | --- | --- |
-| `0` | Plugin válido o run completo |
+| `0` | Plugin válido o ejecución completa |
 | `2` | Error de uso |
 | `3` | Checkpoint pendiente, reintento habilitado o lock ocupado |
-| `10` | Plugin inválido, run bloqueado o estado no disponible |
+| `10` | Plugin inválido, ejecución bloqueada o estado no disponible |
 | `70` | Error interno |
 | `130` | Interrupción, fin de entrada sin decisión o abandono |
 
-El estado y la sesión de Pi viven fuera de `--cwd`, en
-`$XDG_STATE_HOME/skillrun/<id>/` si `XDG_STATE_HOME` es absoluto; si no,
-en `~/.local/state/skillrun/<id>/`. El ID debe cumplir
-`[a-z0-9][a-z0-9-]{0,63}`. Si termina en guion, Pi usa un identificador interno
-estable; el directorio del run y todos los comandos de la CLI conservan el ID original.
-
-## Cómo trabajar por fases
-
-1. Cada fase en su propio hilo. Primer hilo: `prompts/01-inicio.md`.
-2. Hilo de orquestación: `prompts/02-orquestador.md` (cambiar `<n> — <nombre>`)
-   o la línea `START HERE` del handoff anterior.
+El estado y la sesión de Pi se guardan **fuera de `--cwd` y del checkout que lo
+contiene**: en `$XDG_STATE_HOME/skillrun/<id>/` si `XDG_STATE_HOME` es absoluto,
+o en `~/.local/state/skillrun/<id>/`. El ID público debe cumplir
+`[a-z0-9][a-z0-9-]{0,63}`; incluso con un guion final, usa el mismo ID en la CLI.
+Consulta la [guía operativa](docs/agent/RUNTIME.md) para los permisos y la
+recuperación manual de historiales antiguos.
 
 ## Prueba real (Fase 6)
 
-Pi corre solo con `read,grep,find,ls`: la skill `github-project` diagnostica
-un checkout local en `--cwd`, sin `gh` ni red. El `SKILL.md` original de
-`grilling` (`mattpocock/skills@5863806d…`, blob `d2f09a18…`) está copiado en
-`plugins/github-gateway/skills/grilling/`; la copia vendorizada v1.3 (blob
-`8ca78c6d…`) no se toca. Detalles en el
-[handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md).
+En la prueba con **Pi 1.6.0 y un proveedor real**, el plugin completó los pasos
+`discovery` y `github-knowledge` sobre un clon local. El
+[handoff de Fase 6](handoffs/HANDOFF-2026-11-21-PHASE-6.md) registra tanto el
+resultado con ocho referencias como el primer intento, que terminó con la lista
+de evidencia vacía. Un código de salida `0` no certifica la calidad del diagnóstico.
 
-## Estructura
-
-```text
-.
-├── AGENTS.md / CLAUDE.md      # reglas para agentes
-├── PLAN.md                    # plan, decisiones y fases
-├── src/skillrun.py            # app (módulo único)
-├── tests/                     # pytest
-├── plugins/                   # plugins de ejemplo
-├── prompts/                   # prompts de inicio y orquestador
-├── handoffs/                  # cierres de fase
-├── reference/REVIEWS.md       # errores de prototipos (zips ignorados)
-├── .agents/skills/            # skills vendorizadas + skill de entrada
-├── docs/                      # Constitución y docs de agente
-├── tools/check_agent_docs.py  # guard de documentación
-├── pyproject.toml
-├── Makefile
-└── uv.lock
-```
+Las correcciones finales del [PR #3](https://github.com/fegome90-cmd/skill-loop/pull/3)
+se comprobaron por separado. La [guía de verificación](docs/agent/RUNTIME.md#evidencia-y-pendientes)
+distingue las pruebas locales, el ensayo offline con Pi y los checks de GitHub.
 
 ## Calidad
 
-| Herramienta | Rol | Configuración |
-|---|---|---|
-| Ruff | lint + format Python | `pyproject.toml` |
-| mypy | typecheck estricto | `pyproject.toml` |
-| pytest | tests | `pyproject.toml` |
-| Bandit | seguridad | `pyproject.toml` |
-| codespell | ortografía | `.codespellrc` |
-| yamllint | YAML | `.yamllint.yaml` |
-| markdownlint-cli2 | Markdown | `.markdownlint-cli2.jsonc` |
-| shellcheck | shell | `.shellcheckrc` |
-| pre-commit | hooks | `.pre-commit-config.yaml` |
-
 ```bash
-make install   # uv sync
-make lint      # fail-closed
-make format    # Ruff + markdownlint con fix
-make hooks     # pre-commit install + run --all-files
-uv run pytest  # tests
+make lint
+uv run pytest
 ```
 
-## Constitución
-
-La fuente de verdad es
-[`fegome90-cmd/constitucion-ai`](https://github.com/fegome90-cmd/constitucion-ai).
-El snapshot local existe solo para referencia determinista y offline.
-
-| Dato | Valor |
-|---|---|
-| Versión | v1.1 |
-| Commit | `13df6421f8b42bdd602aa45bdf3e024ed7ccadf8` |
-| SHA-256 | `ff201d735c94cb5007651d8f3dcbd8403b1fe0a257dff63fa142c40ff3a65834` |
-
-Ver [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
+El runtime usa solo la biblioteca estándar de Python. El [mapa del código](docs/agent/CODEMAP.md)
+ubica el motor, los plugins y las pruebas. El [plan](PLAN.md#6-fases) registra las fases
+entregadas y el alcance pendiente; [AGENTS.md](AGENTS.md) orienta el trabajo por fase.
 
 ## Colaboración
 
-`main` está protegida: todo cambio entra por pull request y requiere el check
-`Secrets and private paths`.
+Los cambios a `main` entran por pull request con el check obligatorio
+`Secrets and private paths`. Consulta la [plantilla de PR](.github/PULL_REQUEST_TEMPLATE.md)
+y las [instrucciones de seguridad](SECURITY.md) antes de publicar.
+Para comprobar los archivos preparados, ejecuta `./scripts/check-secrets.sh staged`
+con [Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1).
 
-- Plantilla de PR: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
-- Verificación local: usá los comandos de [Calidad](#calidad).
-- Seguridad: `./scripts/check-secrets.sh staged` (requiere
-  [Gitleaks 8.30.1](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1))
-  o activá el hook con `git config core.hooksPath .githooks`. El hook corre el
-  escaneo y, si está instalado, `pre-commit`.
-- Reportes de seguridad: ver [`SECURITY.md`](SECURITY.md); no abras issues públicos.
-
-## Licencia
-
-[MIT](LICENSE).
+[Constitución del proyecto y procedencia](docs/CONSTITUTION.md) · [Licencia MIT](LICENSE)

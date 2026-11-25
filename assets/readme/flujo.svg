@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="228" viewBox="0 0 960 228" role="img" aria-labelledby="title desc">
+  <title id="title">Una ejecución de github-gateway</title>
+  <desc id="desc">Grilling delimita el objetivo. La persona pide la síntesis con :listo y confirma con s. Después, github-project inspecciona el checkout en la misma sesión de Pi.</desc>
+  <rect width="960" height="228" rx="16" fill="#101e29"/>
+  <g font-family="ui-monospace, Menlo, Consolas, monospace">
+    <text x="40" y="43" font-size="21" fill="#d6e2e8">github-gateway</text>
+    <text x="920" y="43" text-anchor="end" font-size="19" fill="#a8bcc5">SESIÓN PI / RPC</text>
+    <path d="M40 63H920" stroke="#445a67"/>
+    <path d="M56 96H898" stroke="#89bfb6" stroke-width="3"/>
+    <circle cx="56" cy="96" r="10" fill="#97dbca"/>
+    <path d="M365 81l15 15-15 15-15-15z" fill="#f6ca75" stroke="#101e29" stroke-width="3"/>
+    <rect x="661" y="86" width="20" height="20" rx="3" fill="#97dbca"/>
+    <path d="M889 88l10 8-10 8" fill="none" stroke="#89bfb6" stroke-width="3"/>
+    <g fill="#f4f7f8" font-family="system-ui, sans-serif" font-size="38" font-weight="650">
+      <text x="40" y="153">Delimitar</text><text x="350" y="153">Confirmar</text><text x="655" y="153">Inspeccionar</text>
+    </g>
+    <g font-size="25">
+      <text x="40" y="194" fill="#97dbca">grilling</text><text x="350" y="194" fill="#f6ca75">:listo → s</text><text x="655" y="194" fill="#97dbca">github-project</text>
+    </g>
+  </g>
+</svg>
